@@ -67,7 +67,7 @@ export function LoginPage() {
         </form>
 
         <div className="mt-5 rounded bg-slate-50 p-3 text-xs text-slate-600">
-          Seed users: builder, operator, approver, auditor. Password pattern: role + 123.
+          Seed users: admin, builder, operator, approver, auditor. Password pattern: role + 123.
         </div>
       </div>
     </div>

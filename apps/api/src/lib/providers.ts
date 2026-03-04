@@ -9,6 +9,18 @@ export type LlmEnvelope = {
   summary: string;
 };
 
+function parseJsonObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 const SYSTEM_PROMPT =
   "Return strict JSON only with keys: confidence (0..1 number), rationale (string), summary (string).";
 
@@ -27,6 +39,63 @@ function parseEnvelope(raw: string): LlmEnvelope | null {
       };
     }
     return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function askProviderForObject(params: {
+  provider: Provider;
+  model: string;
+  apiKey: string;
+  systemPrompt: string;
+  prompt: string;
+  maxTokens?: number;
+}): Promise<Record<string, unknown> | null> {
+  const { provider, model, apiKey, systemPrompt, prompt, maxTokens } = params;
+
+  try {
+    if (provider === "openai") {
+      const client = new OpenAI({ apiKey });
+      const completion = await client.chat.completions.create({
+        model,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: prompt }
+        ]
+      });
+
+      const text = completion.choices[0]?.message?.content;
+      return text ? parseJsonObject(text) : null;
+    }
+
+    if (provider === "anthropic") {
+      const client = new Anthropic({ apiKey });
+      const response = await client.messages.create({
+        model,
+        max_tokens: maxTokens ?? 1200,
+        temperature: 0,
+        system: systemPrompt,
+        messages: [{ role: "user", content: prompt }]
+      });
+
+      const block = response.content.find((entry) => entry.type === "text");
+      return block?.type === "text" ? parseJsonObject(block.text) : null;
+    }
+
+    const client = new GoogleGenAI({ apiKey });
+    const response = await client.models.generateContent({
+      model,
+      contents: `${systemPrompt}\n${prompt}`,
+      config: {
+        temperature: 0,
+        responseMimeType: "application/json"
+      }
+    });
+
+    return response.text ? parseJsonObject(response.text) : null;
   } catch {
     return null;
   }

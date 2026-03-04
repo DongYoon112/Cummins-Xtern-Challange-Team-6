@@ -1,6 +1,7 @@
 import { askProviderForJson } from "../lib/providers";
 import type { ServerTeamSettings } from "../lib/settings";
 import { db } from "../lib/db";
+import { executeReadOnlyExternalQuery } from "../lib/externalDb";
 
 type TaskResult = {
   output: Record<string, unknown>;
@@ -81,6 +82,60 @@ export async function runTaskAgent(params: {
 }): Promise<TaskResult> {
   const { agentName, stepParams, runContext, teamSettings } = params;
   const toolCalls: TaskResult["toolCalls"] = [];
+
+  const databaseMode =
+    stepParams.toolId === "database" ||
+    stepParams.toolHint === "database" ||
+    stepParams.mode === "external_db_query";
+  if (databaseMode && typeof stepParams.query === "string") {
+    const connectionString =
+      String(stepParams.connectionString ?? runContext.databaseConnectionString ?? process.env.EXTERNAL_DB_URL ?? "");
+    if (!connectionString) {
+      return {
+        output: {
+          error: "Database connection string missing.",
+          hint: "Set Database tool connectionString or EXTERNAL_DB_URL."
+        },
+        confidence: 0.2,
+        rationale: "External DB query requested but no connection string provided.",
+        toolCalls,
+        mockMode: true
+      };
+    }
+
+    const query = String(stepParams.query);
+    const queryParams = Array.isArray(stepParams.queryParams) ? stepParams.queryParams : [];
+    const maxRows = typeof stepParams.maxRows === "number" ? stepParams.maxRows : 100;
+
+    const result = await executeReadOnlyExternalQuery({
+      connectionString,
+      query,
+      params: queryParams,
+      maxRows
+    });
+
+    toolCalls.push({
+      server: "external-db",
+      tool: "read_only_query",
+      args: {
+        engine: result.engine,
+        query: query.slice(0, 300),
+        maxRows
+      }
+    });
+
+    return {
+      output: {
+        engine: result.engine,
+        rowCount: result.rowCount,
+        rows: result.rows
+      },
+      confidence: 0.91,
+      rationale: `Executed read-only ${result.engine} query and returned ${result.rowCount} rows.`,
+      toolCalls,
+      mockMode: false
+    };
+  }
 
   if (agentName === "Inventory Agent") {
     const orderId = String(stepParams.orderId ?? runContext.orderId ?? "ORD-1001");

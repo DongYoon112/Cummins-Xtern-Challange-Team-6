@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const RoleSchema = z.enum(["BUILDER", "OPERATOR", "APPROVER", "AUDITOR"]);
+export const RoleSchema = z.enum(["ADMIN", "BUILDER", "OPERATOR", "APPROVER", "AUDITOR"]);
 export type Role = z.infer<typeof RoleSchema>;
 
 export const ProviderSchema = z.enum(["openai", "anthropic", "gemini"]);

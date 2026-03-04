@@ -93,6 +93,7 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [connectionDrag, setConnectionDrag] = useState<{ sourceId: string; point: CanvasPoint } | null>(null);
+  const [nodeTypeToAdd, setNodeTypeToAdd] = useState<WorkflowNodeType>("llm");
   const [viewport, setViewport] = useState<ViewportState>({ x: 30, y: 30, scale: 1 });
   const viewportRef = useRef(viewport);
   const dragRef = useRef<DragState>(null);
@@ -164,7 +165,15 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
   }
 
   function beginPan(event: React.MouseEvent) {
-    if ((event.target as HTMLElement).dataset.role !== "canvas-bg") {
+    const target = event.target as HTMLElement;
+    if (
+      target.closest("[data-role='node-card']") ||
+      target.closest("[data-role='edge-hit']") ||
+      target.closest("button") ||
+      target.closest("input") ||
+      target.closest("textarea") ||
+      target.closest("select")
+    ) {
       return;
     }
 
@@ -299,217 +308,236 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
   return (
     <div className="grid grid-cols-1 gap-3 xl:h-[620px] xl:grid-cols-[1fr,320px]">
       <section className="rounded border border-slate-200 bg-white p-3 xl:h-full">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          {(["start", "llm", "tool", "router", "memory", "output"] as WorkflowNodeType[]).map((type) => (
-            <button
-              className="rounded border border-slate-300 px-2 py-1 text-xs"
-              key={type}
-              onClick={() => addNode(type)}
-              type="button"
-            >
-              + {NODE_TYPE_LABELS[type]}
-            </button>
-          ))}
-          <button
-            className="rounded border border-slate-300 px-2 py-1 text-xs"
-            onClick={() => setViewport({ x: 30, y: 30, scale: 1 })}
-            type="button"
-          >
-            Reset View
-          </button>
-          <button
-            className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={!selectedNodeId}
-            onClick={() => {
-              if (selectedNodeId) {
-                deleteNode(selectedNodeId);
-              }
-            }}
-            type="button"
-          >
-            Delete Selected Node
-          </button>
-          <button
-            className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={!selectedEdgeId}
-            onClick={deleteSelectedEdge}
-            type="button"
-          >
-            Delete Selected Line
-          </button>
-          <span className="text-xs text-slate-500">Connect: drag from source (right dot) to target (left dot).</span>
-          <span className="text-xs text-slate-500">Delete node: click node, press Delete.</span>
-          <span className="text-xs text-slate-500">Delete line: click line, press Delete.</span>
-        </div>
+        <div className="grid gap-3 md:grid-cols-[220px,1fr] xl:h-full">
+          <aside className="rounded border border-slate-200 bg-slate-50 p-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Canvas Tools</h3>
+            <div className="mt-2 space-y-2">
+              <select
+                className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                onChange={(event) => setNodeTypeToAdd(event.target.value as WorkflowNodeType)}
+                value={nodeTypeToAdd}
+              >
+                {(["start", "llm", "tool", "router", "memory", "output"] as WorkflowNodeType[]).map((type) => (
+                  <option key={type} value={type}>
+                    {NODE_TYPE_LABELS[type]}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                onClick={() => addNode(nodeTypeToAdd)}
+                type="button"
+              >
+                + Add Node
+              </button>
+              <button
+                className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                onClick={() => setViewport({ x: 30, y: 30, scale: 1 })}
+                type="button"
+              >
+                Reset View
+              </button>
+              <button
+                className="w-full rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!selectedNodeId}
+                onClick={() => {
+                  if (selectedNodeId) {
+                    deleteNode(selectedNodeId);
+                  }
+                }}
+                type="button"
+              >
+                Delete Selected Node
+              </button>
+              <button
+                className="w-full rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!selectedEdgeId}
+                onClick={deleteSelectedEdge}
+                type="button"
+              >
+                Delete Selected Line
+              </button>
+            </div>
+            <div className="mt-3 space-y-1 text-[11px] text-slate-500">
+              <p>Connect: drag source (right dot) to target (left dot).</p>
+              <p>Delete node: click node + Delete key.</p>
+              <p>Delete line: click line + Delete key.</p>
+            </div>
+          </aside>
 
-        <div
-          className="relative h-[530px] overflow-hidden rounded border border-slate-200"
-          onClick={() => setSelectedEdgeId(null)}
-          onMouseDown={beginPan}
-          onWheel={onWheel}
-          ref={canvasRef}
-          style={{
-            backgroundImage:
-              "linear-gradient(to right, rgba(148,163,184,0.25) 1px, transparent 1px), linear-gradient(to bottom, rgba(148,163,184,0.25) 1px, transparent 1px)",
-            backgroundPosition: `${viewport.x}px ${viewport.y}px`,
-            backgroundSize: `${20 * viewport.scale}px ${20 * viewport.scale}px`
-          }}
-        >
-          <div className="absolute inset-0" data-role="canvas-bg">
+          <div className="flex min-h-0 flex-col">
             <div
-              className="absolute inset-0"
+              className="relative h-[530px] overflow-hidden rounded border border-slate-200 xl:h-full"
+              onClick={() => setSelectedEdgeId(null)}
+              onMouseDown={beginPan}
+              onWheel={onWheel}
+              ref={canvasRef}
               style={{
-                transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
-                transformOrigin: "0 0"
+                backgroundImage:
+                  "linear-gradient(to right, rgba(148,163,184,0.25) 1px, transparent 1px), linear-gradient(to bottom, rgba(148,163,184,0.25) 1px, transparent 1px)",
+                backgroundPosition: `${viewport.x}px ${viewport.y}px`,
+                backgroundSize: `${20 * viewport.scale}px ${20 * viewport.scale}px`
               }}
             >
-              <svg className="absolute left-0 top-0 h-[2000px] w-[2600px]">
-                {flow.edges.map((edge) => {
-                  const source = flow.nodes.find((node) => node.id === edge.source);
-                  const target = flow.nodes.find((node) => node.id === edge.target);
-                  if (!source || !target) {
-                    return null;
-                  }
+              <div className="absolute inset-0" data-role="canvas-bg">
+                <div
+                  className="absolute inset-0"
+                  style={{
+                    transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
+                    transformOrigin: "0 0"
+                  }}
+                >
+                  <svg className="absolute left-0 top-0 h-[2000px] w-[2600px]">
+                    {flow.edges.map((edge) => {
+                      const source = flow.nodes.find((node) => node.id === edge.source);
+                      const target = flow.nodes.find((node) => node.id === edge.target);
+                      if (!source || !target) {
+                        return null;
+                      }
 
-                  const x1 = source.position.x + NODE_SIZE.width;
-                  const y1 = source.position.y + NODE_SIZE.height / 2;
-                  const x2 = target.position.x;
-                  const y2 = target.position.y + NODE_SIZE.height / 2;
-                  const path = buildCurvePath(x1, y1, x2, y2);
+                      const x1 = source.position.x + NODE_SIZE.width;
+                      const y1 = source.position.y + NODE_SIZE.height / 2;
+                      const x2 = target.position.x;
+                      const y2 = target.position.y + NODE_SIZE.height / 2;
+                      const path = buildCurvePath(x1, y1, x2, y2);
 
-                  const selected = selectedEdgeId === edge.id;
-                  return (
-                    <g key={edge.id}>
-                      <path
-                        d={path}
-                        fill="none"
+                      const selected = selectedEdgeId === edge.id;
+                      return (
+                        <g key={edge.id}>
+                          <path
+                            d={path}
+                            fill="none"
+                            data-role="edge-hit"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedNodeId(null);
+                              setSelectedEdgeId(edge.id);
+                            }}
+                            stroke="transparent"
+                            strokeWidth={10}
+                          />
+                          <path
+                            d={path}
+                            fill="none"
+                            stroke={selected ? "#ef4444" : "#64748b"}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={selected ? 3 : 2}
+                          />
+                        </g>
+                      );
+                    })}
+                    {connectionDrag ? (
+                      (() => {
+                        const source = flow.nodes.find((node) => node.id === connectionDrag.sourceId);
+                        if (!source) {
+                          return null;
+                        }
+
+                        const x1 = source.position.x + NODE_SIZE.width;
+                        const y1 = source.position.y + NODE_SIZE.height / 2;
+                        const x2 = connectionDrag.point.x;
+                        const y2 = connectionDrag.point.y;
+                        const path = buildCurvePath(x1, y1, x2, y2);
+
+                        return (
+                          <path
+                            d={path}
+                            fill="none"
+                            stroke="#f59e0b"
+                            strokeDasharray="5 4"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                          />
+                        );
+                      })()
+                    ) : null}
+                  </svg>
+
+                  {flow.nodes.map((node) => {
+                    const selected = selectedNodeId === node.id;
+                    const pending = connectionDrag?.sourceId === node.id;
+                    const label = String(node.config.label ?? NODE_TYPE_LABELS[node.type]);
+                    const description = String(node.config.description ?? "");
+                    return (
+                      <div
+                        className={`absolute cursor-move rounded border p-2 text-xs shadow-sm ${nodeColor(node.type)} ${
+                          selected ? "ring-2 ring-slate-500" : ""
+                        } ${pending ? "ring-2 ring-amber-400" : ""}`}
+                        data-role="node-card"
+                        key={node.id}
+                        onMouseDown={(event) => beginNodeDrag(event, node)}
                         onClick={(event) => {
                           event.stopPropagation();
-                          setSelectedNodeId(null);
-                          setSelectedEdgeId(edge.id);
+                          setSelectedNodeId(node.id);
+                          setSelectedEdgeId(null);
                         }}
-                        stroke="transparent"
-                        strokeWidth={10}
-                      />
-                      <path
-                        d={path}
-                        fill="none"
-                        stroke={selected ? "#ef4444" : "#64748b"}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={selected ? 3 : 2}
-                      />
-                    </g>
-                  );
-                })}
-                {connectionDrag ? (
-                  (() => {
-                    const source = flow.nodes.find((node) => node.id === connectionDrag.sourceId);
-                    if (!source) {
-                      return null;
-                    }
+                        style={{
+                          left: node.position.x,
+                          top: node.position.y,
+                          width: NODE_SIZE.width,
+                          height: NODE_SIZE.height
+                        }}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold">{label}</span>
+                          <span className="text-[10px] uppercase text-slate-500">{node.type}</span>
+                        </div>
+                        {description ? (
+                          <div className="mt-1 truncate text-[11px] text-slate-600" title={description}>
+                            {description}
+                          </div>
+                        ) : null}
 
-                    const x1 = source.position.x + NODE_SIZE.width;
-                    const y1 = source.position.y + NODE_SIZE.height / 2;
-                    const x2 = connectionDrag.point.x;
-                    const y2 = connectionDrag.point.y;
-                    const path = buildCurvePath(x1, y1, x2, y2);
-
-                    return (
-                      <path
-                        d={path}
-                        fill="none"
-                        stroke="#f59e0b"
-                        strokeDasharray="5 4"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                      />
-                    );
-                  })()
-                ) : null}
-              </svg>
-
-              {flow.nodes.map((node) => {
-                const selected = selectedNodeId === node.id;
-                const pending = connectionDrag?.sourceId === node.id;
-                const label = String(node.config.label ?? NODE_TYPE_LABELS[node.type]);
-                const description = String(node.config.description ?? "");
-                return (
-                  <div
-                    className={`absolute cursor-move rounded border p-2 text-xs shadow-sm ${nodeColor(node.type)} ${
-                      selected ? "ring-2 ring-slate-500" : ""
-                    } ${pending ? "ring-2 ring-amber-400" : ""}`}
-                    key={node.id}
-                    onMouseDown={(event) => beginNodeDrag(event, node)}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelectedNodeId(node.id);
-                      setSelectedEdgeId(null);
-                    }}
-                    style={{
-                      left: node.position.x,
-                      top: node.position.y,
-                      width: NODE_SIZE.width,
-                      height: NODE_SIZE.height
-                    }}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-semibold">{label}</span>
-                      <span className="text-[10px] uppercase text-slate-500">{node.type}</span>
-                    </div>
-                    {description ? (
-                      <div className="mt-1 truncate text-[11px] text-slate-600" title={description}>
-                        {description}
+                        <button
+                          className="absolute left-[-7px] top-[36px] h-3.5 w-3.5 rounded-full border border-slate-600 bg-white"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
+                          onMouseUp={(event) => {
+                            event.stopPropagation();
+                            if (connectionDrag && connectionDrag.sourceId !== node.id) {
+                              addEdge(connectionDrag.sourceId, node.id);
+                              setConnectionDrag(null);
+                            }
+                          }}
+                          title="Connect target"
+                          type="button"
+                        />
+                        <button
+                          className="absolute right-[-7px] top-[36px] h-3.5 w-3.5 rounded-full border border-slate-600 bg-white"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            const point = clientToCanvasPoint(event.clientX, event.clientY);
+                            if (!point) {
+                              return;
+                            }
+                            setConnectionDrag({ sourceId: node.id, point });
+                          }}
+                          title="Connect source"
+                          type="button"
+                        />
                       </div>
-                    ) : null}
-
-                    <button
-                      className="absolute left-[-7px] top-[36px] h-3.5 w-3.5 rounded-full border border-slate-600 bg-white"
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                      }}
-                      onMouseUp={(event) => {
-                        event.stopPropagation();
-                        if (connectionDrag && connectionDrag.sourceId !== node.id) {
-                          addEdge(connectionDrag.sourceId, node.id);
-                          setConnectionDrag(null);
-                        }
-                      }}
-                      title="Connect target"
-                      type="button"
-                    />
-                    <button
-                      className="absolute right-[-7px] top-[36px] h-3.5 w-3.5 rounded-full border border-slate-600 bg-white"
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        const point = clientToCanvasPoint(event.clientX, event.clientY);
-                        if (!point) {
-                          return;
-                        }
-                        setConnectionDrag({ sourceId: node.id, point });
-                      }}
-                      title="Connect source"
-                      type="button"
-                    />
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </div>
+              </div>
             </div>
+
+            {!graphValidation.valid ? (
+              <div className="mt-2 rounded border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">
+                {graphValidation.errors.join(" ")}
+              </div>
+            ) : (
+              <div className="mt-2 rounded border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700">
+                Graph validation passed.
+              </div>
+            )}
           </div>
         </div>
-
-        {!graphValidation.valid ? (
-          <div className="mt-2 rounded border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">
-            {graphValidation.errors.join(" ")}
-          </div>
-        ) : (
-          <div className="mt-2 rounded border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700">
-            Graph validation passed.
-          </div>
-        )}
       </section>
 
       <div className="xl:h-full">

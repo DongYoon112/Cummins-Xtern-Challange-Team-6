@@ -44,6 +44,11 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
   const llmProvider = String(node.config.llmProvider ?? "");
   const llmModel = String(node.config.llmModel ?? "");
   const condition = String(node.config.condition ?? "");
+  const query = String(node.config.query ?? "");
+  const queryParams = Array.isArray(node.config.queryParams) ? node.config.queryParams : [];
+  const queryParamsRaw = JSON.stringify(queryParams);
+  const maxRows = String(node.config.maxRows ?? "100");
+  const connectionString = String(node.config.connectionString ?? "");
 
   return (
     <aside className="h-full space-y-3 rounded border border-slate-200 bg-white p-4 xl:overflow-auto">
@@ -112,23 +117,84 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
       ) : null}
 
       {node.type === "tool" ? (
-        <label className="block text-xs">
-          <div className="mb-1 text-slate-600">Linked Tool</div>
-          <select
-            className="w-full rounded border border-slate-300 px-2 py-1"
-            onChange={(event) =>
-              onUpdateNode(node.id, { config: { ...node.config, toolId: event.target.value as ToolId } })
-            }
-            value={linkedToolId}
-          >
-            <option value="">Select enabled tool</option>
-            {enabledTools.map((tool) => (
-              <option key={tool.id} value={tool.id}>
-                {tool.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="space-y-2">
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Linked Tool</div>
+            <select
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, toolId: event.target.value as ToolId } })
+              }
+              value={linkedToolId}
+            >
+              <option value="">Select enabled tool</option>
+              {enabledTools.map((tool) => (
+                <option key={tool.id} value={tool.id}>
+                  {tool.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {linkedToolId === "database" ? (
+            <>
+              <label className="block text-xs">
+                <div className="mb-1 text-slate-600">Connection String Override (optional)</div>
+                <input
+                  className="w-full rounded border border-slate-300 px-2 py-1"
+                  onChange={(event) =>
+                    onUpdateNode(node.id, { config: { ...node.config, connectionString: event.target.value } })
+                  }
+                  placeholder="postgresql://user:pass@host:5432/db"
+                  value={connectionString}
+                />
+              </label>
+              <label className="block text-xs">
+                <div className="mb-1 text-slate-600">SQL Query (read-only)</div>
+                <textarea
+                  className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-[11px]"
+                  onChange={(event) => onUpdateNode(node.id, { config: { ...node.config, query: event.target.value } })}
+                  placeholder="SELECT * FROM orders LIMIT 20"
+                  rows={4}
+                  value={query}
+                />
+              </label>
+              <label className="block text-xs">
+                <div className="mb-1 text-slate-600">Query Params JSON Array</div>
+                <input
+                  className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-[11px]"
+                  onChange={(event) => {
+                    let parsed: unknown[] = [];
+                    try {
+                      const next = JSON.parse(event.target.value) as unknown;
+                      if (Array.isArray(next)) {
+                        parsed = next;
+                      }
+                    } catch {
+                      parsed = [];
+                    }
+                    onUpdateNode(node.id, { config: { ...node.config, queryParams: parsed } });
+                  }}
+                  placeholder='["ORD-1001"]'
+                  value={queryParamsRaw}
+                />
+              </label>
+              <label className="block text-xs">
+                <div className="mb-1 text-slate-600">Max Rows</div>
+                <input
+                  className="w-full rounded border border-slate-300 px-2 py-1"
+                  onChange={(event) =>
+                    onUpdateNode(node.id, {
+                      config: { ...node.config, maxRows: Number(event.target.value) || 100 }
+                    })
+                  }
+                  type="number"
+                  value={maxRows}
+                />
+              </label>
+            </>
+          ) : null}
+        </div>
       ) : null}
 
       {node.type === "router" ? (

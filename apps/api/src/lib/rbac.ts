@@ -8,6 +8,11 @@ export function requireRoles(...allowedRoles: Role[]) {
       return;
     }
 
+    if (req.user.role === "ADMIN") {
+      next();
+      return;
+    }
+
     if (!allowedRoles.includes(req.user.role)) {
       res.status(403).json({ error: "Forbidden for current role" });
       return;

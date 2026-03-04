@@ -14,6 +14,8 @@ import { callMcpTool } from "./lib/mcpClient";
 import { getTeamSettingsForClient, getTeamSettingsForServer, saveProviderKey, updateProviderDefaults } from "./lib/settings";
 import { testProviderConnection } from "./lib/providers";
 import { orchestrator } from "./agents/orchestrator";
+import { compileWorkflowDraft } from "./lib/workflowCompiler";
+import { DraftGenerateInputSchema, generateWorkflowDraft } from "./lib/draftGenerator";
 
 loadEnv();
 loadEnv({ path: path.resolve(fileURLToPath(new URL("../../../.env", import.meta.url))) });
@@ -178,6 +180,101 @@ app.post("/workflows/draft", requireRoles("BUILDER"), (req, res) => {
   }
 });
 
+app.post("/workflows/draft/:draftId/publish", requireRoles("BUILDER"), async (req, res) => {
+  const payloadSchema = z.object({
+    changelog: z.string().min(1).default("Publish draft")
+  });
+
+  const parsed = payloadSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid publish payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const row = db
+      .prepare("SELECT draft_id, name, config_json FROM workflow_drafts WHERE team_id = ? LIMIT 1")
+      .get(req.user!.teamId) as
+      | {
+          draft_id: string;
+          name: string;
+          config_json: string;
+        }
+      | undefined;
+
+    if (!row) {
+      res.status(404).json({ error: "Draft not found" });
+      return;
+    }
+
+    if (row.draft_id !== req.params.draftId) {
+      res.status(404).json({ error: "Draft ID mismatch for this team" });
+      return;
+    }
+
+    const config = JSON.parse(row.config_json) as {
+      id: string;
+      name: string;
+      description?: string;
+      tools?: Array<{
+        id: string;
+        enabled: boolean;
+        config: Record<string, unknown>;
+      }>;
+      graph?: {
+        nodes: Array<{
+          id: string;
+          type: string;
+          position: { x: number; y: number };
+          config: Record<string, unknown>;
+        }>;
+        edges: Array<{ id: string; source: string; target: string }>;
+      };
+    };
+
+    const compiled = compileWorkflowDraft(config);
+    const publishResult = await callMcpTool<Record<string, unknown>, Record<string, unknown>>("registry", "save_workflow_version", {
+      teamId: req.user!.teamId,
+      workflowId: config.id,
+      name: config.name || row.name,
+      description: config.description,
+      changelog: parsed.data.changelog,
+      createdBy: req.user!.id,
+      steps: compiled.steps
+    });
+
+    res.status(201).json({
+      ...publishResult,
+      sourceDraftId: row.draft_id
+    });
+  } catch (error) {
+    console.error(error);
+    const message = error instanceof Error ? error.message : "Failed to publish draft";
+    if (message.startsWith("Graph ") || message.startsWith("Draft ") || message.startsWith("Cannot publish")) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post("/workflows/draft/generate", requireRoles("BUILDER"), async (req, res) => {
+  const parsed = DraftGenerateInputSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid draft generation payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const teamSettings = getTeamSettingsForServer(req.user!.teamId);
+    const generated = await generateWorkflowDraft(parsed.data, teamSettings);
+    res.status(201).json(generated);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to generate draft" });
+  }
+});
+
 app.get("/workflows/:workflowId", async (req, res) => {
   try {
     const version = req.query.version ? Number(req.query.version) : undefined;
@@ -217,6 +314,7 @@ const workflowDraftSchema = z.object({
   config: z.object({
     id: z.string().min(1),
     name: z.string().min(1),
+    description: z.string().optional(),
     agentType: z.string().min(1),
     llmProvider: z.string().min(1),
     llmModel: z.string().min(1),

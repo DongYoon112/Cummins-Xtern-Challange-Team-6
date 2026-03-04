@@ -9,11 +9,12 @@ type TabConfig = {
 };
 
 const tabs: TabConfig[] = [
-  { to: "/workflows", label: "Workflows", roles: ["BUILDER", "OPERATOR"] },
-  { to: "/runs", label: "Runs", roles: ["BUILDER", "OPERATOR", "APPROVER", "AUDITOR"] },
-  { to: "/approvals", label: "Approvals", roles: ["APPROVER"] },
-  { to: "/audit", label: "Audit Log", roles: ["AUDITOR", "BUILDER", "APPROVER"] },
-  { to: "/settings", label: "Settings", roles: ["BUILDER"] }
+  { to: "/workflows", label: "Workflows", roles: ["BUILDER", "OPERATOR", "ADMIN"] },
+  { to: "/run", label: "Run", roles: ["BUILDER", "OPERATOR", "APPROVER", "AUDITOR", "ADMIN"] },
+  { to: "/docs", label: "Docs", roles: ["ADMIN", "BUILDER", "OPERATOR", "APPROVER", "AUDITOR"] },
+  { to: "/approvals", label: "Approvals", roles: ["APPROVER", "ADMIN"] },
+  { to: "/audit", label: "Audit Log", roles: ["AUDITOR", "BUILDER", "APPROVER", "ADMIN"] },
+  { to: "/settings", label: "Settings", roles: ["BUILDER", "ADMIN"] }
 ];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -45,7 +46,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       <nav className="border-b border-slate-200 bg-white/70">
         <div className="mx-auto flex max-w-7xl gap-2 px-4 py-2">
           {tabs.map((tab) => {
-            const allowed = user ? tab.roles.includes(user.role) : false;
+            const allowed = user ? user.role === "ADMIN" || tab.roles.includes(user.role) : false;
             const active = location.pathname.startsWith(tab.to);
             if (!allowed) {
               return (

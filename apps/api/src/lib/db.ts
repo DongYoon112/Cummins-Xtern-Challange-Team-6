@@ -18,7 +18,7 @@ export type DbUser = {
   id: string;
   username: string;
   password_hash: string;
-  role: "BUILDER" | "OPERATOR" | "APPROVER" | "AUDITOR";
+  role: "ADMIN" | "BUILDER" | "OPERATOR" | "APPROVER" | "AUDITOR";
   team_id: string;
 };
 
@@ -134,6 +134,7 @@ export function initApiDb() {
   const usersCount = db.prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number };
   if (usersCount.count === 0) {
     const seedUsers = [
+      { id: "u-admin", username: "admin", password: "admin123", role: "ADMIN" as const },
       { id: "u-builder", username: "builder", password: "builder123", role: "BUILDER" as const },
       { id: "u-operator", username: "operator", password: "operator123", role: "OPERATOR" as const },
       { id: "u-approver", username: "approver", password: "approver123", role: "APPROVER" as const },
@@ -157,6 +158,19 @@ export function initApiDb() {
     });
 
     tx();
+  }
+
+  const existingAdmin = db
+    .prepare("SELECT id FROM users WHERE username = ? LIMIT 1")
+    .get("admin") as { id: string } | undefined;
+  if (!existingAdmin) {
+    db.prepare("INSERT INTO users (id, username, password_hash, role, team_id) VALUES (?, ?, ?, ?, ?)").run(
+      "u-admin",
+      "admin",
+      bcrypt.hashSync("admin123", 10),
+      "ADMIN",
+      "team-default"
+    );
   }
 
   db.prepare(

@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import type { RunState } from "../lib/types";
+import type { RunState, WorkflowSummary } from "../lib/types";
 
 export function RunsPage() {
   const { token } = useAuth();
   const [runs, setRuns] = useState<RunState[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
+  const [workflowToRun, setWorkflowToRun] = useState<string>("");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<RunState | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function loadRuns() {
@@ -15,6 +18,40 @@ export function RunsPage() {
     setRuns(payload.runs);
     if (!selectedRunId && payload.runs.length > 0) {
       setSelectedRunId(payload.runs[0].runId);
+    }
+  }
+
+  async function loadWorkflows() {
+    const payload = await apiFetch<{ workflows: WorkflowSummary[] }>("/workflows", {}, token ?? undefined);
+    const next = payload.workflows ?? [];
+    setWorkflows(next);
+    if (!workflowToRun && next.length > 0) {
+      setWorkflowToRun(next[0].workflowId);
+    }
+  }
+
+  async function startRun() {
+    setError(null);
+    setStatus(null);
+    if (!workflowToRun) {
+      setError("Select a workflow first.");
+      return;
+    }
+
+    try {
+      const payload = await apiFetch<{ run: RunState }>(
+        "/runs",
+        {
+          method: "POST",
+          body: JSON.stringify({ workflowId: workflowToRun })
+        },
+        token ?? undefined
+      );
+      setStatus(`Run started: ${payload.run.runId}`);
+      setSelectedRunId(payload.run.runId);
+      await loadRuns();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start run");
     }
   }
 
@@ -29,6 +66,7 @@ export function RunsPage() {
     }
 
     loadRuns().catch((err) => setError(err instanceof Error ? err.message : "Failed to load runs"));
+    loadWorkflows().catch((err) => setError(err instanceof Error ? err.message : "Failed to load workflows"));
     const interval = window.setInterval(() => {
       loadRuns().catch(() => undefined);
     }, 4000);
@@ -56,7 +94,30 @@ export function RunsPage() {
   return (
     <div className="grid gap-4 lg:grid-cols-[320px,1fr]">
       <section className="rounded border border-slate-200 bg-white p-4">
-        <div className="mb-2 text-sm font-semibold">Runs</div>
+        <div className="mb-2 text-sm font-semibold">Run</div>
+        <div className="mb-3 space-y-2 rounded border border-slate-200 bg-slate-50 p-2">
+          <label className="block text-xs text-slate-700">
+            Workflow
+            <select
+              className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm"
+              onChange={(event) => setWorkflowToRun(event.target.value)}
+              value={workflowToRun}
+            >
+              {workflows.map((workflow) => (
+                <option key={workflow.workflowId} value={workflow.workflowId}>
+                  {workflow.name} ({workflow.workflowId})
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="w-full rounded bg-slate-900 px-3 py-1 text-sm text-white" onClick={startRun} type="button">
+            Start Run
+          </button>
+        </div>
+
+        {status ? <p className="mb-2 text-xs text-emerald-700">{status}</p> : null}
+
+        <div className="mb-2 text-sm font-semibold">Recent Runs</div>
         <div className="space-y-2">
           {runs.map((run) => (
             <button

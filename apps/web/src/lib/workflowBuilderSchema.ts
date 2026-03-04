@@ -63,6 +63,7 @@ export type WorkflowTool = {
 export type WorkflowConfig = {
   id: string;
   name: string;
+  description?: string;
   agentType: AgentType;
   llmProvider: LlmProvider;
   llmModel: string;
@@ -151,6 +152,7 @@ export function createDefaultWorkflowConfig(): WorkflowConfig {
   return {
     id: generateId("wf"),
     name: "Step 1 Draft",
+    description: "",
     agentType: "Orchestrator",
     llmProvider: "openai",
     llmModel: "gpt-4.1-mini",
@@ -213,6 +215,7 @@ export function devBuilderToSchema(devState: DevBuilderState, previous?: Workflo
   return {
     id: devState.id,
     name: devState.name,
+    description: previous?.description ?? "",
     agentType: devState.agentType,
     llmProvider: devState.llmProvider,
     llmModel: devState.llmModel,

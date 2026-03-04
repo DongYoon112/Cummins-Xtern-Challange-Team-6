@@ -2,9 +2,43 @@
 
 AgentFoundry is a monorepo starter for governed multi-agent workflow execution in supply chain/manufacturing domains.
 
+## Repo summary
+
+AgentFoundry is a full-stack workflow platform where teams can design AI-assisted workflows, publish versioned definitions, run them with approvals, and audit every decision. It combines:
+
+- A Builder UI for creating draft workflow graphs (`Start`, `LLM`, `Tool`, `Router`, `Memory`, `Output`)
+- A publish pipeline that compiles drafts into runnable workflow versions
+- A run engine that executes steps, pauses for approvals, and resumes after decisions
+- Governance controls (RBAC, tool allowlists, policy gates, audit logs)
+- Provider + tool configuration for practical local deployment (OpenAI/Anthropic/Gemini, optional external DB queries)
+
+In short: this repo is a governed "builder -> publish -> run -> approve -> audit" system for enterprise-style agent workflows.
+
+## Example company scenario
+
+### Acme Components (manufacturing supplier)
+
+Acme receives a high-priority order and needs to decide whether to ship now, backorder, or use expedited logistics.
+
+1. A `BUILDER` creates a workflow:
+   - `Start -> Inventory Check -> Logistics Plan -> Finance Impact -> Approval -> Notify Team -> Output`
+2. They publish version `v3` of the workflow.
+3. An `OPERATOR` runs `v3` for order `ORD-1001`.
+4. The workflow detects a shortage and proposes an expedited shipment with higher cost.
+5. Policy flags `costImpactUSD > 500`, so the run pauses and creates an approval.
+6. An `APPROVER` reviews the context and approves the decision.
+7. The run resumes, sends the notification, and completes.
+8. An `AUDITOR` exports the audit log to verify:
+   - who ran it
+   - which version executed
+   - why approval was required
+   - which actions were taken
+
+Result: Acme gets faster, more consistent operational decisions with human oversight and a traceable compliance trail.
+
 ## What is included
 
-- React web app with tabs: `Workflows`, `Runs`, `Approvals`, `Audit Log`, `Settings`
+- React web app with tabs: `Workflows`, `Run`, `Approvals`, `Audit Log`, `Settings`
 - Express API gateway with:
   - Local auth (username/password) + RBAC
   - Workflow versioning/forking
@@ -78,6 +112,7 @@ examples/
 
 All users are assigned to `team-default`.
 
+- `admin / admin123` (`ADMIN`)
 - `builder / builder123` (`BUILDER`)
 - `operator / operator123` (`OPERATOR`)
 - `approver / approver123` (`APPROVER`)
@@ -136,6 +171,8 @@ By `Policy/Governance Agent` and orchestration pipeline:
 3. Run pauses on approval node or policy-triggered approval
 4. Login as `approver` to approve/reject
 5. Login as `auditor` to inspect/export audit records
+6. In `Workflows`, use `Dashboard` view to browse all workflows (repo-style list).
+7. Open `Docs` tab for quick-start usage guidance.
 
 ## Builder Step 1 (Agent Type + Core Tools)
 

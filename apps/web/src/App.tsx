@@ -7,6 +7,7 @@ import { RunsPage } from "./pages/RunsPage";
 import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { AuditLogPage } from "./pages/AuditLogPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { DocsPage } from "./pages/DocsPage";
 import type { Role } from "./lib/types";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -31,7 +32,7 @@ function RequireRole({
   children: React.ReactNode;
 }) {
   const { user } = useAuth();
-  if (!user || !roles.includes(user.role)) {
+  if (!user || (user.role !== "ADMIN" && !roles.includes(user.role))) {
     return <div className="rounded border border-warn/30 bg-rose-50 p-4 text-sm text-warn">Not authorized.</div>;
   }
 
@@ -46,16 +47,18 @@ function Shell() {
           <Route
             path="/workflows"
             element={
-              <RequireRole roles={["BUILDER", "OPERATOR"]}>
+              <RequireRole roles={["BUILDER", "OPERATOR", "ADMIN"]}>
                 <WorkflowsPage />
               </RequireRole>
             }
           />
-          <Route path="/runs" element={<RunsPage />} />
+          <Route path="/run" element={<RunsPage />} />
+          <Route path="/runs" element={<Navigate replace to="/run" />} />
+          <Route path="/docs" element={<DocsPage />} />
           <Route
             path="/approvals"
             element={
-              <RequireRole roles={["APPROVER"]}>
+              <RequireRole roles={["APPROVER", "ADMIN"]}>
                 <ApprovalsPage />
               </RequireRole>
             }
@@ -63,7 +66,7 @@ function Shell() {
           <Route
             path="/audit"
             element={
-              <RequireRole roles={["AUDITOR", "BUILDER", "APPROVER"]}>
+              <RequireRole roles={["AUDITOR", "BUILDER", "APPROVER", "ADMIN"]}>
                 <AuditLogPage />
               </RequireRole>
             }
@@ -71,7 +74,7 @@ function Shell() {
           <Route
             path="/settings"
             element={
-              <RequireRole roles={["BUILDER"]}>
+              <RequireRole roles={["BUILDER", "ADMIN"]}>
                 <SettingsPage />
               </RequireRole>
             }

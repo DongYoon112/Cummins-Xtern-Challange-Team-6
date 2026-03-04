@@ -2,24 +2,57 @@ import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
+type ProviderKey = "openai" | "anthropic" | "gemini";
+type StorageMode = "server" | "local";
+
 type SettingsPayload = {
   teamId: string;
-  defaultProvider: "openai" | "anthropic" | "gemini";
+  defaultProvider: ProviderKey;
   defaultModel: string;
-  keyPreviews: Record<"openai" | "anthropic" | "gemini", string>;
-  hasKeys: Record<"openai" | "anthropic" | "gemini", boolean>;
+  keyPreviews: Record<ProviderKey, string>;
+  hasKeys: Record<ProviderKey, boolean>;
   updatedAt: string;
 };
+
+const LOCAL_KEYS_STORAGE = "agentfoundry.localProviderKeys";
+const LOCAL_MODE_STORAGE = "agentfoundry.settingsStorageMode";
+
+function loadLocalKeys() {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_KEYS_STORAGE);
+    if (!raw) {
+      return { openai: "", anthropic: "", gemini: "" } satisfies Record<ProviderKey, string>;
+    }
+    const parsed = JSON.parse(raw) as Record<ProviderKey, string>;
+    return {
+      openai: parsed.openai ?? "",
+      anthropic: parsed.anthropic ?? "",
+      gemini: parsed.gemini ?? ""
+    };
+  } catch {
+    return { openai: "", anthropic: "", gemini: "" };
+  }
+}
 
 export function SettingsPage() {
   const { token } = useAuth();
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
-  const [provider, setProvider] = useState<"openai" | "anthropic" | "gemini">("openai");
+  const [provider, setProvider] = useState<ProviderKey>("openai");
   const [model, setModel] = useState("gpt-4.1-mini");
-  const [keys, setKeys] = useState<Record<"openai" | "anthropic" | "gemini", string>>({
+  const [keys, setKeys] = useState<Record<ProviderKey, string>>({
     openai: "",
     anthropic: "",
     gemini: ""
+  });
+  const [localKeys, setLocalKeys] = useState<Record<ProviderKey, string>>(() =>
+    typeof window === "undefined" ? { openai: "", anthropic: "", gemini: "" } : loadLocalKeys()
+  );
+  const [storageMode, setStorageMode] = useState<StorageMode>(() => {
+    if (typeof window === "undefined") {
+      return "server";
+    }
+    const mode = window.localStorage.getItem(LOCAL_MODE_STORAGE);
+    return mode === "local" ? "local" : "server";
   });
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,9 +72,30 @@ export function SettingsPage() {
     loadSettings().catch((err) => setError(err instanceof Error ? err.message : "Failed to load settings"));
   }, [token]);
 
-  async function saveKey(target: "openai" | "anthropic" | "gemini") {
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(LOCAL_MODE_STORAGE, storageMode);
+  }, [storageMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(LOCAL_KEYS_STORAGE, JSON.stringify(localKeys));
+  }, [localKeys]);
+
+  async function saveKey(target: ProviderKey) {
     setStatus(null);
     setError(null);
+
+    if (storageMode === "local") {
+      setLocalKeys((current) => ({ ...current, [target]: keys[target] }));
+      setKeys((current) => ({ ...current, [target]: "" }));
+      setStatus(`${target} key saved to localStorage (dev mode).`);
+      return;
+    }
 
     try {
       await apiFetch(
@@ -84,6 +138,11 @@ export function SettingsPage() {
     setStatus(null);
     setError(null);
 
+    if (storageMode === "local") {
+      setStatus("Local mode stores keys only in browser. Server connection test uses server-stored keys.");
+      return;
+    }
+
     try {
       const payload = await apiFetch<{ ok: boolean; mockMode: boolean; message: string }>(
         "/settings/test",
@@ -106,14 +165,37 @@ export function SettingsPage() {
 
   return (
     <section className="space-y-4 rounded border border-slate-200 bg-white p-4">
-      <h2 className="text-sm font-semibold">Provider Settings</h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">Provider Settings</h2>
+        <div className="flex items-center gap-2 rounded border border-slate-200 px-2 py-1 text-xs">
+          <span className="text-slate-600">Storage mode:</span>
+          <button
+            className={`rounded px-2 py-0.5 ${storageMode === "server" ? "bg-accent text-white" : "bg-slate-100"}`}
+            onClick={() => setStorageMode("server")}
+            type="button"
+          >
+            Server Encrypted
+          </button>
+          <button
+            className={`rounded px-2 py-0.5 ${storageMode === "local" ? "bg-accent text-white" : "bg-slate-100"}`}
+            onClick={() => setStorageMode("local")}
+            type="button"
+          >
+            Local Dev
+          </button>
+        </div>
+      </div>
+
+      <p className="text-xs text-slate-500">
+        Server mode uses `MASTER_KEY` encryption in API. Local mode stores keys in browser localStorage for quick dev.
+      </p>
 
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-sm">
           <div className="mb-1 text-slate-700">Default provider</div>
           <select
             className="w-full rounded border border-slate-300 px-2 py-1"
-            onChange={(event) => setProvider(event.target.value as "openai" | "anthropic" | "gemini")}
+            onChange={(event) => setProvider(event.target.value as ProviderKey)}
             value={provider}
           >
             <option value="openai">OpenAI</option>
@@ -146,7 +228,9 @@ export function SettingsPage() {
           <div className="rounded border border-slate-200 p-3" key={name}>
             <div className="text-sm font-medium capitalize">{name}</div>
             <div className="mt-1 text-xs text-slate-500">
-              Stored key: {settings.keyPreviews[name] || "(none)"}
+              {storageMode === "server"
+                ? `Stored key: ${settings.keyPreviews[name] || "(none)"}`
+                : `Local key: ${localKeys[name] ? "******** (present)" : "(none)"}`}
             </div>
             <input
               className="mt-2 w-full rounded border border-slate-300 px-2 py-1 text-sm"

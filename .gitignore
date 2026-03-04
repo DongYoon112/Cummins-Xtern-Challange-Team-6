@@ -7,3 +7,6 @@ dist
 apps/web/dist
 data/*.db
 data/*.sqlite
+data/*.db-shm
+data/*.db-wal
+*.tsbuildinfo

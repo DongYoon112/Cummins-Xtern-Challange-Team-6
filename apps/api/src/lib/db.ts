@@ -7,7 +7,7 @@ import { DEFAULT_MODELS } from "@agentfoundry/shared";
 
 const DB_PATH = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
-  : path.resolve(fileURLToPath(new URL("../../../data/agentfoundry.db", import.meta.url)));
+  : path.resolve(fileURLToPath(new URL("../../../../data/agentfoundry.db", import.meta.url)));
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
@@ -77,6 +77,15 @@ export function initApiDb() {
       body TEXT NOT NULL,
       status TEXT NOT NULL,
       created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_drafts (
+      team_id TEXT PRIMARY KEY,
+      draft_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      config_json TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS inventory (

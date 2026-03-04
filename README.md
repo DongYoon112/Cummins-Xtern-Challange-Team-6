@@ -137,6 +137,32 @@ By `Policy/Governance Agent` and orchestration pipeline:
 4. Login as `approver` to approve/reject
 5. Login as `auditor` to inspect/export audit records
 
+## Builder Step 1 (Agent Type + Core Tools)
+
+1. Open `Workflows` and choose mode: `Flowchart` or `Developer`.
+2. Configure:
+   - Agent Type (`Orchestrator`, `Research`, `Code`, `Data/Analytics`, `Ops/DevOps`, `Custom`)
+   - Core tools (multi-select) and tool-specific settings (API key/base URL/scopes/rate limits)
+3. Flowchart mode supports:
+   - Node canvas with pan/zoom + grid
+   - Node types: `Start`, `LLM`, `Tool`, `Router`, `Memory`, `Output`
+   - Edge creation via node handles
+   - Right-side node config drawer
+4. Developer mode supports:
+   - Step-list wizard (`Model`, `Tools`, `Memory`, `Routing`, `Output`, `Review`)
+   - Forms that edit the same underlying JSON schema as Flowchart mode
+5. Use `Save Draft`:
+   - Saves to browser `localStorage`
+   - POSTs to `POST /workflows/draft`
+6. Validation enforced before save:
+   - Exactly one `Start`
+   - At least one `Output`
+   - Connected path from `Start` to an `Output`
+
+Settings tab key storage:
+- `Server Encrypted` (recommended): API-side encrypted using `MASTER_KEY`
+- `Local Dev`: browser `localStorage` for quick local iteration
+
 ## Notes
 
 - Optimization Agent creates PR-style proposals only (`optimization_proposals`); never auto-applies.

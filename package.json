@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "concurrently -n api,web,registry,store,audit -c blue,green,magenta,cyan,yellow \"pnpm --filter @agentfoundry/api dev\" \"pnpm --filter @agentfoundry/web dev\" \"pnpm --filter @agentfoundry/mcp-registry dev\" \"pnpm --filter @agentfoundry/mcp-store dev\" \"pnpm --filter @agentfoundry/mcp-audit dev\"",
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test:builder": "pnpm --filter @agentfoundry/api exec tsx --test ../../apps/web/src/lib/workflowBuilderSchema.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

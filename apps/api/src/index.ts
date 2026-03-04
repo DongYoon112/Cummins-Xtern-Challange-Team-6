@@ -1,4 +1,6 @@
-import "dotenv/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { config as loadEnv } from "dotenv";
 
 import bcrypt from "bcryptjs";
 import cors from "cors";
@@ -12,6 +14,9 @@ import { callMcpTool } from "./lib/mcpClient";
 import { getTeamSettingsForClient, getTeamSettingsForServer, saveProviderKey, updateProviderDefaults } from "./lib/settings";
 import { testProviderConnection } from "./lib/providers";
 import { orchestrator } from "./agents/orchestrator";
+
+loadEnv();
+loadEnv({ path: path.resolve(fileURLToPath(new URL("../../../.env", import.meta.url))) });
 
 const PORT = Number(process.env.API_PORT ?? 4000);
 
@@ -99,6 +104,80 @@ app.get("/workflows", async (req, res) => {
   }
 });
 
+app.get("/workflows/draft", requireRoles("BUILDER", "OPERATOR"), (req, res) => {
+  try {
+    const row = db
+      .prepare("SELECT draft_id, name, config_json, updated_at FROM workflow_drafts WHERE team_id = ? LIMIT 1")
+      .get(req.user!.teamId) as
+      | {
+          draft_id: string;
+          name: string;
+          config_json: string;
+          updated_at: string;
+        }
+      | undefined;
+
+    if (!row) {
+      res.json({ draft: null });
+      return;
+    }
+
+    res.json({
+      draft: {
+        id: row.draft_id,
+        name: row.name,
+        config: JSON.parse(row.config_json),
+        updatedAt: row.updated_at
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to load workflow draft" });
+  }
+});
+
+app.post("/workflows/draft", requireRoles("BUILDER"), (req, res) => {
+  const parsed = workflowDraftSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid workflow draft payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const now = new Date().toISOString();
+    db.prepare(
+      `
+      INSERT INTO workflow_drafts (team_id, draft_id, name, config_json, created_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(team_id) DO UPDATE SET
+        draft_id = excluded.draft_id,
+        name = excluded.name,
+        config_json = excluded.config_json,
+        updated_at = excluded.updated_at
+      `
+    ).run(
+      req.user!.teamId,
+      parsed.data.id,
+      parsed.data.name,
+      JSON.stringify(parsed.data.config),
+      req.user!.id,
+      now
+    );
+
+    res.status(201).json({
+      draft: {
+        id: parsed.data.id,
+        name: parsed.data.name,
+        config: parsed.data.config,
+        updatedAt: now
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to save workflow draft" });
+  }
+});
+
 app.get("/workflows/:workflowId", async (req, res) => {
   try {
     const version = req.query.version ? Number(req.query.version) : undefined;
@@ -130,6 +209,46 @@ const workflowSaveSchema = z.object({
       params: z.record(z.any()).default({})
     })
   )
+});
+
+const workflowDraftSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  config: z.object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    agentType: z.string().min(1),
+    llmProvider: z.string().min(1),
+    llmModel: z.string().min(1),
+    tools: z.array(
+      z.object({
+        id: z.string().min(1),
+        label: z.string().min(1),
+        category: z.string().min(1),
+        enabled: z.boolean(),
+        config: z.record(z.any())
+      })
+    ),
+    graph: z
+      .object({
+        nodes: z.array(
+          z.object({
+            id: z.string().min(1),
+            type: z.string().min(1),
+            position: z.object({ x: z.number(), y: z.number() }),
+            config: z.record(z.any())
+          })
+        ),
+        edges: z.array(
+          z.object({
+            id: z.string().min(1),
+            source: z.string().min(1),
+            target: z.string().min(1)
+          })
+        )
+      })
+      .optional()
+  })
 });
 
 app.post("/workflows", requireRoles("BUILDER"), async (req, res) => {

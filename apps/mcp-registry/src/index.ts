@@ -1,4 +1,4 @@
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
 
 import fs from "node:fs";
 import path from "node:path";
@@ -6,15 +6,17 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import express from "express";
-import { createMcpExpressApp } from "@modelcontextprotocol/express";
-import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
-import { McpServer } from "@modelcontextprotocol/server";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   AGENT_CATALOG,
   BUILTIN_WORKFLOW_TEMPLATES,
   WorkflowStepSchema
 } from "@agentfoundry/shared";
 import { z } from "zod";
+
+loadEnv();
+loadEnv({ path: path.resolve(fileURLToPath(new URL("../../../.env", import.meta.url))) });
 
 const PORT = Number(process.env.MCP_REGISTRY_PORT ?? 4101);
 const DB_PATH = process.env.DB_PATH
@@ -138,9 +140,9 @@ function seedTemplates() {
   tx();
 }
 
-function jsonResult(payload: unknown) {
+function jsonResult(payload: Record<string, unknown>) {
   return {
-    content: [{ type: "text", text: JSON.stringify(payload) }],
+    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
     structuredContent: payload
   };
 }
@@ -390,13 +392,13 @@ initDb();
 seedAgents();
 seedTemplates();
 
-const app = createMcpExpressApp();
+const app = express();
 app.use(express.json({ limit: "2mb" }));
 
 app.post("/mcp", async (req, res) => {
   try {
     const server = createRegistryServer();
-    const transport = new NodeStreamableHTTPServerTransport({
+    const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true
     });

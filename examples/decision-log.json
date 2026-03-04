@@ -1,0 +1,39 @@
+{
+  "records": [
+    {
+      "id": "audit_8f2d5d98-1d34-4f35-a77f-91e5ebf2ea0f",
+      "timestamp": "2026-03-03T18:40:12.321Z",
+      "userId": "u-operator",
+      "teamId": "team-default",
+      "runId": "run_2b9f1a03-70aa-4b9f-a8d4-8efd5f44f7c2",
+      "workflowId": "wf_91ca1f24-bf59-42f0-8dd3-a7ef592095ea",
+      "stepId": "finance-impact",
+      "agentName": "Finance Agent",
+      "inputs": {
+        "stepParams": {
+          "costThreshold": 500
+        },
+        "runContext": {
+          "lastLogisticsCostUSD": 620,
+          "lastShortageQty": 4
+        }
+      },
+      "output": {
+        "costImpactUSD": 642,
+        "estimatedMarginImpactPct": 0.128,
+        "recommendation": "Route to approver due to financial impact"
+      },
+      "confidence": 0.64,
+      "rationale": "Computed total cost impact from shipping + shortage penalty: 642.",
+      "toolCalls": [
+        {
+          "server": "internal-db",
+          "tool": "select_shipping_rates",
+          "args": {
+            "region": "US-MW"
+          }
+        }
+      ]
+    }
+  ]
+}

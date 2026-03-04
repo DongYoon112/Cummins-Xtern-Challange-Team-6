@@ -1,0 +1,9 @@
+node_modules
+pnpm-lock.yaml
+dist
+.vscode
+.env
+*.log
+apps/web/dist
+data/*.db
+data/*.sqlite

@@ -1,0 +1,16 @@
+{
+  "name": "agentfoundry",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.12.3",
+  "scripts": {
+    "dev": "concurrently -n api,web,registry,store,audit -c blue,green,magenta,cyan,yellow \"pnpm --filter @agentfoundry/api dev\" \"pnpm --filter @agentfoundry/web dev\" \"pnpm --filter @agentfoundry/mcp-registry dev\" \"pnpm --filter @agentfoundry/mcp-store dev\" \"pnpm --filter @agentfoundry/mcp-audit dev\"",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.6.3"
+  }
+}

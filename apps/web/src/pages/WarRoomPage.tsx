@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { API_BASE, apiFetch } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
@@ -29,7 +29,7 @@ type WarRoomDecision = {
 };
 
 type WarRoomSnapshot = {
-  run: { runId: string; workflowId: string; status: RunStatus } | null;
+  run: { runId: string; workflowId: string; status: RunStatus; pauseRequested?: boolean } | null;
   events: WarRoomEvent[];
   runSteps: Array<Record<string, unknown>>;
   activeSteps: Array<Record<string, unknown>>;
@@ -53,6 +53,7 @@ function mergeEvents(current: WarRoomEvent[], incoming: WarRoomEvent[]) {
 
 export function WarRoomPage() {
   const { token } = useAuth();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const runId = searchParams.get("runId") ?? "";
   const [events, setEvents] = useState<WarRoomEvent[]>([]);
@@ -60,9 +61,11 @@ export function WarRoomPage() {
   const [activeSteps, setActiveSteps] = useState<Array<Record<string, unknown>>>([]);
   const [pendingDecisions, setPendingDecisions] = useState<WarRoomDecision[]>([]);
   const [runStatus, setRunStatus] = useState<RunStatus | null>(null);
+  const [pauseRequested, setPauseRequested] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reportText, setReportText] = useState("");
+  const [isControllingRun, setIsControllingRun] = useState(false);
 
   useEffect(() => {
     if (!token || !runId) {
@@ -76,6 +79,7 @@ export function WarRoomPage() {
         setActiveSteps(snapshot.activeSteps ?? []);
         setPendingDecisions(snapshot.pendingDecisions ?? []);
         setRunStatus(snapshot.run?.status ?? null);
+        setPauseRequested(snapshot.run?.pauseRequested === true);
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Failed to load War Room snapshot");
@@ -122,6 +126,9 @@ export function WarRoomPage() {
               const nextStatus = payload.payload.status;
               if (typeof nextStatus === "string") {
                 setRunStatus(nextStatus as RunStatus);
+              }
+              if (typeof payload.payload.pauseRequested === "boolean") {
+                setPauseRequested(payload.payload.pauseRequested);
               }
             }
           } catch {
@@ -184,6 +191,7 @@ export function WarRoomPage() {
           setActiveSteps(snapshot.activeSteps ?? []);
           setPendingDecisions(snapshot.pendingDecisions ?? []);
           setRunStatus(snapshot.run?.status ?? null);
+          setPauseRequested(snapshot.run?.pauseRequested === true);
         })
         .catch(() => undefined);
     }, 4000);
@@ -290,10 +298,42 @@ export function WarRoomPage() {
       setActiveSteps(snapshot.activeSteps ?? []);
       setPendingDecisions(snapshot.pendingDecisions ?? []);
       setRunStatus(snapshot.run?.status ?? null);
+      setPauseRequested(snapshot.run?.pauseRequested === true);
       setEvents((current) => mergeEvents(current, snapshot.events ?? []));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to submit decision");
+    }
+  }
+
+  async function togglePauseRun() {
+    if (!token || !runId) {
+      return;
+    }
+    setIsControllingRun(true);
+    setStatus(null);
+    setError(null);
+    try {
+      const endpoint = pauseRequested ? "/api/war-room/resume" : "/api/war-room/pause";
+      const snapshot = await apiFetch<WarRoomSnapshot>(
+        endpoint,
+        {
+          method: "POST",
+          body: JSON.stringify({ runId })
+        },
+        token
+      );
+      setEvents((current) => mergeEvents(current, snapshot.events ?? []));
+      setRunSteps(snapshot.runSteps ?? []);
+      setActiveSteps(snapshot.activeSteps ?? []);
+      setPendingDecisions(snapshot.pendingDecisions ?? []);
+      setRunStatus(snapshot.run?.status ?? null);
+      setPauseRequested(snapshot.run?.pauseRequested === true);
+      setStatus(pauseRequested ? "Run resumed." : "Pause requested. Current step will stop before next step.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update run state");
+    } finally {
+      setIsControllingRun(false);
     }
   }
 
@@ -304,10 +344,32 @@ export function WarRoomPage() {
   return (
     <div className="space-y-4">
       <section className="rounded border border-slate-200 bg-slate-900 p-4 text-slate-100">
-        <h1 className="text-xl font-semibold">War Room</h1>
-        <p className="mt-1 text-sm text-slate-300">Live orchestration dashboard for workflow execution and procurement response.</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold">War Room</h1>
+            <p className="mt-1 text-sm text-slate-300">Live orchestration dashboard for workflow execution and procurement response.</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              className="rounded bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-70"
+              disabled={isControllingRun || runStatus === "COMPLETED" || runStatus === "FAILED" || runStatus === "REJECTED"}
+              onClick={togglePauseRun}
+              type="button"
+            >
+              {isControllingRun ? "Updating..." : pauseRequested ? "Resume Run" : "Pause Run"}
+            </button>
+            <button
+              className="rounded border border-slate-400 px-3 py-1.5 text-xs font-semibold text-slate-100"
+              onClick={() => navigate("/workflows")}
+              type="button"
+            >
+              Back to Builder
+            </button>
+          </div>
+        </div>
         <div className="mt-2 text-xs text-slate-300">
-          Run: <span className="font-mono">{runId}</span> | Status: <span className="font-semibold">{runStatus ?? "unknown"}</span>
+          Run: <span className="font-mono">{runId}</span> | Status: <span className="font-semibold">{runStatus ?? "unknown"}</span> | Paused:{" "}
+          <span className="font-semibold">{pauseRequested ? "yes" : "no"}</span>
         </div>
       </section>
 

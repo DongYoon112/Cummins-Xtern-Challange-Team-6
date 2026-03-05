@@ -451,6 +451,96 @@ export class OrchestratorService {
     return RunStateSchema.parse(payload.run);
   }
 
+  async pauseRun(params: {
+    runId: string;
+    actor: RunActor;
+    reason?: string;
+  }) {
+    await this.refreshAllowlists();
+    const run = await this.getRun(params.runId, params.actor.teamId);
+    if (!run) {
+      throw new Error("Run not found");
+    }
+    if (run.status === "COMPLETED" || run.status === "REJECTED" || run.status === "FAILED") {
+      return run;
+    }
+
+    const runtimeContext = this.ensureRuntimeContext(run);
+    runtimeContext.variables.pauseRequested = true;
+    runtimeContext.variables.pauseReason = params.reason ?? "Paused manually in War Room.";
+    run.status = "WAITING_APPROVAL";
+    await this.persistRun(run, params.actor);
+    await this.emitWarRoomEvent(params.actor, {
+      runId: run.runId,
+      workflowId: run.workflowId,
+      type: "WORKFLOW_STATUS_UPDATE",
+      payload: {
+        status: run.status,
+        message: "Run pause requested.",
+        pauseRequested: true
+      }
+    });
+    return run;
+  }
+
+  async resumeRun(params: {
+    runId: string;
+    actor: RunActor;
+  }) {
+    await this.refreshAllowlists();
+    const run = await this.getRun(params.runId, params.actor.teamId);
+    if (!run) {
+      throw new Error("Run not found");
+    }
+    if (run.status === "COMPLETED" || run.status === "REJECTED" || run.status === "FAILED") {
+      return run;
+    }
+
+    const hasPendingApproval = db
+      .prepare("SELECT 1 FROM approvals WHERE team_id = ? AND run_id = ? AND status = 'PENDING' LIMIT 1")
+      .get(params.actor.teamId, run.runId);
+    if (hasPendingApproval) {
+      throw new Error("Cannot resume: run has pending approvals.");
+    }
+
+    const pendingRouter = await this.callMcpAsAgent<{ runId: string }, { decisions: RouterDecisionRecord[] }>({
+      agentName: "Orchestrator Agent",
+      userId: params.actor.userId,
+      teamId: params.actor.teamId,
+      runId: run.runId,
+      workflowId: run.workflowId,
+      stepId: "resume-check",
+      server: "store",
+      tool: "list_pending_router_decisions",
+      args: { runId: run.runId }
+    });
+    if (pendingRouter.decisions.length > 0) {
+      throw new Error("Cannot resume: run has pending router decisions.");
+    }
+
+    const runtimeContext = this.ensureRuntimeContext(run);
+    runtimeContext.variables.pauseRequested = false;
+    runtimeContext.variables.pauseReason = "";
+    run.status = "RUNNING";
+    await this.persistRun(run, params.actor);
+    await this.emitWarRoomEvent(params.actor, {
+      runId: run.runId,
+      workflowId: run.workflowId,
+      type: "WORKFLOW_STATUS_UPDATE",
+      payload: {
+        status: run.status,
+        message: "Run resumed.",
+        pauseRequested: false
+      }
+    });
+    await this.executeFromCurrentStep(run, params.actor);
+    const latest = await this.getRun(run.runId, params.actor.teamId);
+    if (!latest) {
+      throw new Error("Run not found after resume");
+    }
+    return latest;
+  }
+
   private async executeMemoryStep(params: {
     run: RunState;
     step: RunStepState;
@@ -524,6 +614,22 @@ export class OrchestratorService {
       const idx = run.currentStepIndex;
       const step = run.steps[idx];
       const runtimeContext = this.ensureRuntimeContext(run);
+      if (runtimeContext.variables.pauseRequested === true) {
+        run.status = "WAITING_APPROVAL";
+        await this.persistRun(run, actor);
+        await this.emitWarRoomEvent(actor, {
+          runId: run.runId,
+          workflowId: run.workflowId,
+          stepId: step.stepId,
+          type: "WORKFLOW_STATUS_UPDATE",
+          payload: {
+            status: run.status,
+            message: "Run paused.",
+            pauseRequested: true
+          }
+        });
+        return;
+      }
       const startedAt = new Date().toISOString();
       runtimeContext.steps[step.stepId] = { ...(runtimeContext.steps[step.stepId] ?? {}), status: "RUNNING", startedAt };
       run.status = "RUNNING";

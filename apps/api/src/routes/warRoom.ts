@@ -20,6 +20,10 @@ const decisionSchema = z.object({
   decision: z.enum(["approve", "reject"])
 });
 
+const runControlSchema = z.object({
+  runId: z.string().min(1)
+});
+
 async function resolveWarRoomWorkflowId(params: { teamId: string; templateName: string; actorUserId: string }) {
   const workflows = await callMcpTool<{ teamId: string }, { workflows: Array<Record<string, unknown>> }>("registry", "list_workflows", {
     teamId: params.teamId
@@ -70,7 +74,14 @@ async function buildWarRoomSnapshot(runId: string, teamId: string) {
   const activeSteps = stepsPayload.steps.filter((step) => step.status === "RUNNING" || step.status === "WAITING_APPROVAL");
 
   return {
-    run,
+    run: run
+      ? {
+          runId: run.runId,
+          workflowId: run.workflowId,
+          status: run.status,
+          pauseRequested: (run.context as { variables?: { pauseRequested?: boolean } } | undefined)?.variables?.pauseRequested === true
+        }
+      : null,
     events: eventsPayload.events,
     runSteps: stepsPayload.steps,
     activeSteps,
@@ -156,6 +167,59 @@ router.post("/decision", async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Failed to process War Room decision" });
+  }
+});
+
+router.post("/pause", async (req, res) => {
+  const parsed = runControlSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid pause payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const run = await orchestrator.pauseRun({
+      runId: parsed.data.runId,
+      actor: {
+        userId: req.user!.id,
+        username: req.user!.username,
+        teamId: req.user!.teamId
+      }
+    });
+    const snapshot = await buildWarRoomSnapshot(run.runId, req.user!.teamId);
+    res.json(snapshot);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to pause run" });
+  }
+});
+
+router.post("/resume", async (req, res) => {
+  const parsed = runControlSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid resume payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const run = await orchestrator.resumeRun({
+      runId: parsed.data.runId,
+      actor: {
+        userId: req.user!.id,
+        username: req.user!.username,
+        teamId: req.user!.teamId
+      }
+    });
+    const snapshot = await buildWarRoomSnapshot(run.runId, req.user!.teamId);
+    res.json(snapshot);
+  } catch (error) {
+    console.error(error);
+    const message = error instanceof Error ? error.message : "Failed to resume run";
+    if (message.startsWith("Cannot resume:")) {
+      res.status(409).json({ error: message });
+      return;
+    }
+    res.status(500).json({ error: "Failed to resume run" });
   }
 });
 

@@ -9,7 +9,7 @@ const ToolConfigSchema = z.record(z.any());
 
 const NodeSchema = z.object({
   id: z.string().min(1),
-  type: z.enum(["start", "llm", "tool", "router", "memory", "output"]),
+  type: z.enum(["start", "llm", "tool", "router", "memory", "debate", "output"]),
   position: z.object({ x: z.number(), y: z.number() }),
   config: z.record(z.any()).default({})
 });
@@ -434,4 +434,3 @@ export async function generateWorkflowDraft(input: DraftGenerateInput, teamSetti
     risks: Array.from(new Set(risks))
   };
 }
-

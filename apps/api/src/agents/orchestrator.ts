@@ -314,7 +314,7 @@ export class OrchestratorService {
   }
 
   private async executeFromCurrentStep(run: RunState, actor: RunActor) {
-    const teamSettings = getTeamSettingsForServer(actor.teamId);
+    const teamSettings = getTeamSettingsForServer(actor.teamId, run.workflowId);
 
     for (let idx = run.currentStepIndex; idx < run.steps.length; idx += 1) {
       const step = run.steps[idx];

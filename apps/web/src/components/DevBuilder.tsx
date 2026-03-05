@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
 import { ToolPicker } from "./ToolPicker";
 import {
+  LLM_MODEL_OPTIONS,
   STEP_LIST,
   flowBuilderToSchema,
   schemaToDevBuilder,
   schemaToFlowBuilder,
   devBuilderToSchema,
+  getDefaultModelForProvider,
   type AgentType,
   type LlmProvider,
   type WorkflowConfig,
@@ -32,6 +34,10 @@ function nodeDefaultPosition(type: WorkflowNodeType) {
 export function DevBuilder({ config, onConfigChange }: DevBuilderProps) {
   const [activeStep, setActiveStep] = useState<(typeof STEP_LIST)[number]>("Model");
   const devState = useMemo(() => schemaToDevBuilder(config), [config]);
+  const availableModels = LLM_MODEL_OPTIONS[devState.llmProvider];
+  const modelOptions = availableModels.includes(devState.llmModel)
+    ? availableModels
+    : [devState.llmModel, ...availableModels].filter(Boolean);
 
   function updateFromDevState(patch: Partial<typeof devState>) {
     const next = devBuilderToSchema({ ...devState, ...patch }, config);
@@ -145,7 +151,13 @@ export function DevBuilder({ config, onConfigChange }: DevBuilderProps) {
               <div className="mb-1 text-slate-700">LLM Provider</div>
               <select
                 className="w-full rounded border border-slate-300 px-2 py-1"
-                onChange={(event) => updateFromDevState({ llmProvider: event.target.value as LlmProvider })}
+                onChange={(event) => {
+                  const nextProvider = event.target.value as LlmProvider;
+                  updateFromDevState({
+                    llmProvider: nextProvider,
+                    llmModel: getDefaultModelForProvider(nextProvider)
+                  });
+                }}
                 value={devState.llmProvider}
               >
                 <option value="openai">OpenAI</option>
@@ -156,15 +168,27 @@ export function DevBuilder({ config, onConfigChange }: DevBuilderProps) {
 
             <label className="text-sm">
               <div className="mb-1 text-slate-700">LLM Model</div>
-              <input
+              <select
                 className="w-full rounded border border-slate-300 px-2 py-1"
                 onChange={(event) => updateFromDevState({ llmModel: event.target.value })}
                 value={devState.llmModel}
-              />
+              >
+                {modelOptions.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
         ) : null}
 
+        {activeStep === "Model" ? (
+          <div className="mt-2 text-xs text-slate-500">
+            Provider-specific model options are shown automatically.
+          </div>
+        ) : null}
+        
         {activeStep === "Tools" ? (
           <ToolPicker
             onToggleTool={updateToolToggle}

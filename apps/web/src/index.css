@@ -1,19 +1,79 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
   color: #1f2937;
-  background: radial-gradient(circle at top left, #d9ecef 0%, #f4f4f2 45%, #fefefe 100%);
+  background: radial-gradient(circle at top left, #ffedd5 0%, #fff7ed 45%, #fefefe 100%);
+  --motion-fast: 180ms;
+  --motion-medium: 280ms;
+  --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+  font-family: "DM Sans", "Segoe UI", "Trebuchet MS", sans-serif;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  animation: app-fade-in var(--motion-medium) var(--ease-smooth);
 }
 
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+a,
+button,
+input,
+select,
+textarea,
+section,
+nav,
+header {
+  transition:
+    background-color var(--motion-fast) var(--ease-smooth),
+    border-color var(--motion-fast) var(--ease-smooth),
+    color var(--motion-fast) var(--ease-smooth),
+    box-shadow var(--motion-fast) var(--ease-smooth),
+    transform var(--motion-fast) var(--ease-smooth),
+    opacity var(--motion-fast) var(--ease-smooth);
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+main > * {
+  animation: rise-in var(--motion-medium) var(--ease-smooth);
+}
+
+@keyframes app-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
 }

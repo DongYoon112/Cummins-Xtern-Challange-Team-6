@@ -7,8 +7,8 @@ module.exports = {
         base: "#f4f4f2",
         panel: "#ffffff",
         ink: "#1f2937",
-        accent: "#0b7285",
-        accentDark: "#0a4f5c",
+        accent: "#f97316",
+        accentDark: "#c2410c",
         warn: "#b42318"
       }
     }

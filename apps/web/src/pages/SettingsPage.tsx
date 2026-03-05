@@ -1,21 +1,26 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import type { WorkflowSummary } from "../lib/types";
 
 type ProviderKey = "openai" | "anthropic" | "gemini";
 type StorageMode = "server" | "local";
 
 type SettingsPayload = {
   teamId: string;
+  repoId: string | null;
   defaultProvider: ProviderKey;
   defaultModel: string;
   keyPreviews: Record<ProviderKey, string>;
   hasKeys: Record<ProviderKey, boolean>;
+  externalDbUrlPreview: string;
+  hasExternalDbUrl: boolean;
   updatedAt: string;
 };
 
 const LOCAL_KEYS_STORAGE = "agentfoundry.localProviderKeys";
 const LOCAL_MODE_STORAGE = "agentfoundry.settingsStorageMode";
+const SETTINGS_REPO_SCOPE_STORAGE = "agentfoundry.settingsRepoScope";
 
 function loadLocalKeys() {
   try {
@@ -37,6 +42,13 @@ function loadLocalKeys() {
 export function SettingsPage() {
   const { token } = useAuth();
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
+  const [repoId, setRepoId] = useState<string>(() => {
+    if (typeof window === "undefined") {
+      return "";
+    }
+    return window.localStorage.getItem(SETTINGS_REPO_SCOPE_STORAGE) ?? "";
+  });
   const [provider, setProvider] = useState<ProviderKey>("openai");
   const [model, setModel] = useState("gpt-4.1-mini");
   const [keys, setKeys] = useState<Record<ProviderKey, string>>({
@@ -56,9 +68,16 @@ export function SettingsPage() {
   });
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [externalDbUrl, setExternalDbUrl] = useState("");
+
+  async function loadWorkflows() {
+    const payload = await apiFetch<{ workflows: WorkflowSummary[] }>("/workflows", {}, token ?? undefined);
+    setWorkflows(payload.workflows ?? []);
+  }
 
   async function loadSettings() {
-    const payload = await apiFetch<SettingsPayload>("/settings", {}, token ?? undefined);
+    const query = repoId ? `?repoId=${encodeURIComponent(repoId)}` : "";
+    const payload = await apiFetch<SettingsPayload>(`/settings${query}`, {}, token ?? undefined);
     setSettings(payload);
     setProvider(payload.defaultProvider);
     setModel(payload.defaultModel);
@@ -69,8 +88,22 @@ export function SettingsPage() {
       return;
     }
 
-    loadSettings().catch((err) => setError(err instanceof Error ? err.message : "Failed to load settings"));
+    loadWorkflows().catch((err) => setError(err instanceof Error ? err.message : "Failed to load workflows"));
   }, [token]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(SETTINGS_REPO_SCOPE_STORAGE, repoId);
+  }, [repoId]);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    loadSettings().catch((err) => setError(err instanceof Error ? err.message : "Failed to load settings"));
+  }, [repoId, token]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -102,7 +135,7 @@ export function SettingsPage() {
         "/settings/key",
         {
           method: "POST",
-          body: JSON.stringify({ provider: target, key: keys[target] })
+          body: JSON.stringify({ provider: target, key: keys[target], repoId: repoId || undefined })
         },
         token ?? undefined
       );
@@ -123,7 +156,7 @@ export function SettingsPage() {
         "/settings/defaults",
         {
           method: "POST",
-          body: JSON.stringify({ provider, model })
+          body: JSON.stringify({ provider, model, repoId: repoId || undefined })
         },
         token ?? undefined
       );
@@ -148,7 +181,7 @@ export function SettingsPage() {
         "/settings/test",
         {
           method: "POST",
-          body: JSON.stringify({ provider, model })
+          body: JSON.stringify({ provider, model, repoId: repoId || undefined })
         },
         token ?? undefined
       );
@@ -156,6 +189,54 @@ export function SettingsPage() {
       setStatus(`${payload.ok ? "Success" : "Failed"}: ${payload.message}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Connection test failed");
+    }
+  }
+
+  async function saveExternalDb() {
+    setStatus(null);
+    setError(null);
+    if (storageMode === "local") {
+      setStatus("External DB URL is only supported in server mode.");
+      return;
+    }
+
+    try {
+      await apiFetch(
+        "/settings/external-db",
+        {
+          method: "POST",
+          body: JSON.stringify({ url: externalDbUrl, repoId: repoId || undefined })
+        },
+        token ?? undefined
+      );
+      setStatus(externalDbUrl.trim() ? "External DB URL saved (encrypted server-side)." : "External DB URL cleared.");
+      setExternalDbUrl("");
+      await loadSettings();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save external DB URL");
+    }
+  }
+
+  async function testExternalDb() {
+    setStatus(null);
+    setError(null);
+    if (storageMode === "local") {
+      setStatus("Local mode stores keys only in browser. External DB test uses server-stored URL.");
+      return;
+    }
+
+    try {
+      const payload = await apiFetch<{ ok: boolean; message: string; engine?: string }>(
+        "/settings/external-db/test",
+        {
+          method: "POST",
+          body: JSON.stringify({ url: externalDbUrl || undefined, repoId: repoId || undefined })
+        },
+        token ?? undefined
+      );
+      setStatus(`${payload.ok ? "Success" : "Failed"}: ${payload.message}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "External DB test failed");
     }
   }
 
@@ -167,23 +248,48 @@ export function SettingsPage() {
     <section className="space-y-4 rounded border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">Provider Settings</h2>
-        <div className="flex items-center gap-2 rounded border border-slate-200 px-2 py-1 text-xs">
-          <span className="text-slate-600">Storage mode:</span>
-          <button
-            className={`rounded px-2 py-0.5 ${storageMode === "server" ? "bg-accent text-white" : "bg-slate-100"}`}
-            onClick={() => setStorageMode("server")}
-            type="button"
-          >
-            Server Encrypted
-          </button>
-          <button
-            className={`rounded px-2 py-0.5 ${storageMode === "local" ? "bg-accent text-white" : "bg-slate-100"}`}
-            onClick={() => setStorageMode("local")}
-            type="button"
-          >
-            Local Dev
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2 rounded border border-slate-200 px-2 py-1 text-xs">
+            <span className="text-slate-600">Storage mode:</span>
+            <button
+              className={`rounded px-2 py-0.5 ${storageMode === "server" ? "bg-accent text-white" : "bg-slate-100"}`}
+              onClick={() => setStorageMode("server")}
+              type="button"
+            >
+              Server Encrypted
+            </button>
+            <button
+              className={`rounded px-2 py-0.5 ${storageMode === "local" ? "bg-accent text-white" : "bg-slate-100"}`}
+              onClick={() => setStorageMode("local")}
+              type="button"
+            >
+              Local Dev
+            </button>
+          </div>
         </div>
+      </div>
+
+      <div className="grid gap-2 md:max-w-md">
+        <label className="text-sm">
+          <div className="mb-1 text-slate-700">Settings scope</div>
+          <select
+            className="w-full rounded border border-slate-300 px-2 py-1"
+            onChange={(event) => setRepoId(event.target.value)}
+            value={repoId}
+          >
+            <option value="">Team default (global)</option>
+            {workflows.map((workflow) => (
+              <option key={workflow.workflowId} value={workflow.workflowId}>
+                Repo: {workflow.name} ({workflow.workflowId})
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="text-xs text-slate-500">
+          {repoId
+            ? `Editing repo-local settings for ${repoId}.`
+            : "Editing team-level fallback settings used when a repo-specific profile is not selected."}
+        </p>
       </div>
 
       <p className="text-xs text-slate-500">
@@ -251,6 +357,30 @@ export function SettingsPage() {
           </div>
         ))}
       </div>
+
+      <section className="rounded border border-slate-200 p-3">
+        <h3 className="text-sm font-semibold">External Database</h3>
+        <p className="mt-1 text-xs text-slate-500">
+          Save a default external DB connection string used by Database tool nodes when node-level override is not set.
+        </p>
+        <div className="mt-2 text-xs text-slate-500">
+          Stored URL: {settings.externalDbUrlPreview || "(none)"} {settings.hasExternalDbUrl ? "" : "(fallback to .env EXTERNAL_DB_URL if set)"}
+        </div>
+        <input
+          className="mt-2 w-full rounded border border-slate-300 px-2 py-1 text-sm"
+          onChange={(event) => setExternalDbUrl(event.target.value)}
+          placeholder="postgresql://user:password@host:5432/dbname"
+          value={externalDbUrl}
+        />
+        <div className="mt-2 flex gap-2">
+          <button className="rounded border border-slate-300 px-3 py-1 text-sm" onClick={saveExternalDb} type="button">
+            Save External DB URL
+          </button>
+          <button className="rounded border border-slate-300 px-3 py-1 text-sm" onClick={testExternalDb} type="button">
+            Test External DB
+          </button>
+        </div>
+      </section>
 
       {status ? <p className="text-sm text-emerald-700">{status}</p> : null}
       {error ? <p className="text-sm text-warn">{error}</p> : null}

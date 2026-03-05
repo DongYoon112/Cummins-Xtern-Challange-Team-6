@@ -1,16 +1,18 @@
-# AgentFoundry MVP
+# Orange Lantern MVP
 
-AgentFoundry is a monorepo starter for governed multi-agent workflow execution in supply chain/manufacturing domains.
+Orange Lantern is a monorepo starter for governed multi-agent workflow execution in supply chain/manufacturing domains.
 
 ## Repo summary
 
-AgentFoundry is a full-stack workflow platform where teams can design AI-assisted workflows, publish versioned definitions, run them with approvals, and audit every decision. It combines:
+Orange Lantern is a full-stack workflow platform where teams can design AI-assisted workflows, publish versioned definitions, run them with approvals, and audit every decision. It combines:
 
+- A Home dashboard for high-level stats (estimated API credits, responses, operations, run health)
 - A Builder UI for creating draft workflow graphs (`Start`, `LLM`, `Tool`, `Router`, `Memory`, `Output`)
 - A publish pipeline that compiles drafts into runnable workflow versions
 - A run engine that executes steps, pauses for approvals, and resumes after decisions
 - Governance controls (RBAC, tool allowlists, policy gates, audit logs)
 - Provider + tool configuration for practical local deployment (OpenAI/Anthropic/Gemini, optional external DB queries)
+- A sidebar notification center with actionable alerts routed to the relevant page (`/approvals`, `/run?runId=...`)
 
 In short: this repo is a governed "builder -> publish -> run -> approve -> audit" system for enterprise-style agent workflows.
 
@@ -38,7 +40,7 @@ Result: Acme gets faster, more consistent operational decisions with human overs
 
 ## What is included
 
-- React web app with tabs: `Workflows`, `Run`, `Approvals`, `Audit Log`, `Settings`
+- React web app with sidebar pages: `Home`, `Workflows`, `Operations`, `Run`, `Approvals`, `Audit Log`, `Settings`, `Docs`
 - Express API gateway with:
   - Local auth (username/password) + RBAC
   - Workflow versioning/forking
@@ -166,13 +168,22 @@ By `Policy/Governance Agent` and orchestration pipeline:
 
 ## Workflow usage flow
 
-1. Login as `builder` to create/edit workflow versions
-2. Login as `operator` to run workflows
-3. Run pauses on approval node or policy-triggered approval
-4. Login as `approver` to approve/reject
-5. Login as `auditor` to inspect/export audit records
-6. In `Workflows`, use `Dashboard` view to browse all workflows (repo-style list).
-7. Open `Docs` tab for quick-start usage guidance.
+1. Login and land on `Home` for platform-level metrics and recent activity.
+2. Use `Workflows` to create/edit workflow versions and publish.
+3. Use `Run` or `Operations` to start and monitor workflow runs.
+4. Run pauses on approval node or policy-triggered approval.
+5. `APPROVER`/`ADMIN` can open `Approvals` to approve/reject.
+6. Use `Audit Log` to inspect/export governance records.
+7. Open `Docs` for quick-start usage guidance.
+
+## Sidebar UX additions
+
+- Hover any sidebar option to see a summary popup.
+- If current role cannot access an option, popup explains allowed roles.
+- `Alerts` button opens notification center in the sidebar.
+- Clicking an alert routes directly to what needs action:
+  - Approval alerts -> `Approvals`
+  - Run alerts -> `Run` with `runId` query preselected
 
 ## Builder Step 1 (Agent Type + Core Tools)
 

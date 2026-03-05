@@ -45,7 +45,21 @@ export function initApiDb() {
       openai_key_enc TEXT,
       anthropic_key_enc TEXT,
       gemini_key_enc TEXT,
+      external_db_url_enc TEXT,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS repo_settings (
+      team_id TEXT NOT NULL,
+      repo_id TEXT NOT NULL,
+      default_provider TEXT NOT NULL,
+      default_model TEXT NOT NULL,
+      openai_key_enc TEXT,
+      anthropic_key_enc TEXT,
+      gemini_key_enc TEXT,
+      external_db_url_enc TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (team_id, repo_id)
     );
 
     CREATE TABLE IF NOT EXISTS approvals (
@@ -180,6 +194,12 @@ export function initApiDb() {
     ON CONFLICT(team_id) DO NOTHING
     `
   ).run("team-default", "openai", DEFAULT_MODELS.openai, now);
+
+  const settingColumns = db.prepare("PRAGMA table_info(team_settings)").all() as Array<{ name: string }>;
+  const hasExternalDbColumn = settingColumns.some((column) => column.name === "external_db_url_enc");
+  if (!hasExternalDbColumn) {
+    db.exec("ALTER TABLE team_settings ADD COLUMN external_db_url_enc TEXT");
+  }
 
   const inventoryCount = db.prepare("SELECT COUNT(*) AS count FROM inventory").get() as { count: number };
   if (inventoryCount.count === 0) {

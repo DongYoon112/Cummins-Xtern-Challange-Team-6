@@ -11,13 +11,19 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   if (user) {
-    return <Navigate to="/workflows" replace />;
+    return <Navigate to="/home" replace />;
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-cyan-50 via-slate-100 to-stone-50 px-4">
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-orange-50 via-amber-50 to-stone-50 px-4">
       <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-xl">
-        <h1 className="text-2xl font-semibold text-accentDark">AgentFoundry</h1>
+        <div className="flex items-center gap-2">
+          <span
+            aria-hidden="true"
+            className="inline-block h-3.5 w-3.5 rounded-full bg-orange-400 shadow-[0_0_18px_5px_rgba(251,146,60,0.9)]"
+          />
+          <h1 className="text-2xl font-semibold text-accentDark">Orange Lantern</h1>
+        </div>
         <p className="mt-1 text-sm text-slate-600">Sign in to run governed multi-agent workflows.</p>
 
         <form
@@ -28,7 +34,7 @@ export function LoginPage() {
             setError(null);
             try {
               await login(username, password);
-              navigate("/workflows", { replace: true });
+              navigate("/home", { replace: true });
             } catch (err) {
               setError(err instanceof Error ? err.message : "Login failed");
             } finally {

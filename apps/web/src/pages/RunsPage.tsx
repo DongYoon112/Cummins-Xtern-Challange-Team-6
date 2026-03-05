@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import type { RunState, WorkflowSummary } from "../lib/types";
 
 export function RunsPage() {
+  const location = useLocation();
   const { token } = useAuth();
   const [runs, setRuns] = useState<RunState[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
@@ -75,6 +77,15 @@ export function RunsPage() {
   }, [token]);
 
   useEffect(() => {
+    const query = new URLSearchParams(location.search);
+    const runIdFromQuery = query.get("runId");
+    if (!runIdFromQuery) {
+      return;
+    }
+    setSelectedRunId(runIdFromQuery);
+  }, [location.search]);
+
+  useEffect(() => {
     if (!token || !selectedRunId) {
       return;
     }
@@ -122,7 +133,7 @@ export function RunsPage() {
           {runs.map((run) => (
             <button
               className={`w-full rounded border px-3 py-2 text-left text-sm ${
-                selectedRunId === run.runId ? "border-accent bg-cyan-50" : "border-slate-200"
+                selectedRunId === run.runId ? "border-accent bg-orange-50" : "border-slate-200"
               }`}
               key={run.runId}
               onClick={() => setSelectedRunId(run.runId)}

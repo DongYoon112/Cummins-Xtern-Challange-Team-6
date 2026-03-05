@@ -19,7 +19,7 @@ export type ToolId =
 
 export type ToolCategory = "Discovery" | "Integration" | "System" | "Data" | "Communication" | "AI";
 
-export type WorkflowNodeType = "start" | "llm" | "tool" | "router" | "memory" | "output";
+export type WorkflowNodeType = "start" | "llm" | "tool" | "router" | "memory" | "debate" | "output";
 
 export type WorkflowNode = {
   id: string;
@@ -139,6 +139,16 @@ export const TOOL_DEFINITIONS: Array<{
 ];
 
 export const STEP_LIST = ["Model", "Tools", "Memory", "Routing", "Output", "Review"] as const;
+
+export const LLM_MODEL_OPTIONS: Record<LlmProvider, string[]> = {
+  openai: ["gpt-4.1-mini", "gpt-4.1", "o4-mini"],
+  anthropic: ["claude-3-7-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"],
+  gemini: ["gemini-2.0-flash", "gemini-2.0-pro", "gemini-1.5-pro"]
+};
+
+export function getDefaultModelForProvider(provider: LlmProvider) {
+  return LLM_MODEL_OPTIONS[provider][0];
+}
 
 function generateId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;

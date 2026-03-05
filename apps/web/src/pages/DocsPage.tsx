@@ -91,6 +91,12 @@ export function DocsPage() {
               <p className="mt-1 text-slate-700">Context retention strategy for session or workflow state.</p>
             </div>
             <div className="rounded border border-slate-200 bg-slate-50 p-3 text-sm">
+              <div className="font-semibold">Debate</div>
+              <p className="mt-1 text-slate-700">
+                Runs multi-model debate rounds and synthesizes one recommendation.
+              </p>
+            </div>
+            <div className="rounded border border-slate-200 bg-slate-50 p-3 text-sm">
               <div className="font-semibold">Output</div>
               <p className="mt-1 text-slate-700">Final result node. At least one reachable Output is required.</p>
             </div>
@@ -105,6 +111,7 @@ export function DocsPage() {
           <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm text-slate-700">
             <li>
               Enable <code>Database</code> in Developer mode tools and set its <code>connectionString</code>, or set{" "}
+              <code>External Database URL</code> in <code>Settings</code> (stored encrypted), or set{" "}
               <code>EXTERNAL_DB_URL</code> in <code>.env</code>.
             </li>
             <li>

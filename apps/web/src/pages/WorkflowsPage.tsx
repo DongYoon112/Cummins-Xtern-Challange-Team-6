@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+﻿import { Fragment, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { DevBuilder } from "../components/DevBuilder";
 import { FlowBuilder } from "../components/FlowBuilder";
 import { apiFetch } from "../lib/api";
@@ -8,7 +9,8 @@ import {
   WORKFLOW_DRAFT_STORAGE_KEY,
   createDefaultWorkflowConfig,
   validateFlowGraph,
-  type WorkflowConfig
+  type WorkflowConfig,
+  type WorkflowNodeType
 } from "../lib/workflowBuilderSchema";
 
 type BuilderMode = "flowchart" | "developer";
@@ -63,6 +65,29 @@ const AI_TOOL_CHOICES = [
   { id: "file_write", label: "File Write" },
   { id: "email_send", label: "Email" },
   { id: "code", label: "Code" }
+] as const;
+
+const EMBEDDED_WORKFLOW_STEPS = [
+  {
+    title: "Describe Task",
+    detail: "Operations manager enters: Monitor supplier delays and notify procurement."
+  },
+  {
+    title: "Generate Flow",
+    detail: "Platform creates a draft graph with monitoring, risk scoring, and alert nodes."
+  },
+  {
+    title: "Review and Edit",
+    detail: "User updates guardrails, thresholds, and routing in the visual builder."
+  },
+  {
+    title: "Deploy",
+    detail: "Workflow is published and ready for automated execution."
+  },
+  {
+    title: "Operate",
+    detail: "Runs execute continuously with alerts and report outputs for teams."
+  }
 ] as const;
 
 function normalizeWorkflowSummary(input: unknown): WorkflowSummary | null {
@@ -139,7 +164,69 @@ function repoDraftStorageKey(repoId: string) {
   return `${WORKFLOW_DRAFT_STORAGE_KEY}.${repoId}`;
 }
 
+function buildGraphFromPublishedSteps(
+  steps: NonNullable<WorkflowVersionDetails["steps"]>
+): NonNullable<WorkflowConfig["graph"]> {
+  const startId = `node_start_${Math.random().toString(36).slice(2, 8)}`;
+  const nodes: NonNullable<WorkflowConfig["graph"]>["nodes"] = [
+    { id: startId, type: "start", position: { x: 100, y: 180 }, config: { label: "Start" } }
+  ];
+  const edges: NonNullable<WorkflowConfig["graph"]>["edges"] = [];
+
+  let previousId = startId;
+  steps.forEach((step, index) => {
+    const rawId = step.id && step.id.trim() ? step.id : `node_${index + 1}`;
+    const nodeId = `node_${rawId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+    const agent = String(step.agentName ?? "").toLowerCase();
+    const nodeType: WorkflowNodeType =
+      step.kind === "APPROVAL"
+        ? "router"
+        : agent.includes("debate")
+          ? "debate"
+          : agent.includes("logistics") || typeof step.params?.toolId === "string"
+            ? "tool"
+            : agent.includes("notification")
+              ? "output"
+              : "llm";
+
+    nodes.push({
+      id: nodeId,
+      type: nodeType,
+      position: { x: 340 + index * 240, y: 180 },
+      config: {
+        label: step.name ?? `Step ${index + 1}`,
+        ...(step.params ?? {})
+      }
+    });
+
+    edges.push({
+      id: `edge_${Math.random().toString(36).slice(2, 8)}`,
+      source: previousId,
+      target: nodeId
+    });
+    previousId = nodeId;
+  });
+
+  if (!nodes.some((node) => node.type === "output")) {
+    const outputId = `node_output_${Math.random().toString(36).slice(2, 8)}`;
+    nodes.push({
+      id: outputId,
+      type: "output",
+      position: { x: 340 + steps.length * 240, y: 180 },
+      config: { label: "Output" }
+    });
+    edges.push({
+      id: `edge_${Math.random().toString(36).slice(2, 8)}`,
+      source: previousId,
+      target: outputId
+    });
+  }
+
+  return { nodes, edges };
+}
+
 export function WorkflowsPage() {
+  const navigate = useNavigate();
   const { token, user } = useAuth();
   const [pageMode, setPageMode] = useState<PageMode>("dashboard");
   const [builderUnlocked, setBuilderUnlocked] = useState(false);
@@ -261,7 +348,7 @@ export function WorkflowsPage() {
     }
   }
 
-  function openWorkflowInBuilder(workflow: WorkflowSummary) {
+  async function openWorkflowInBuilder(workflow: WorkflowSummary) {
     const nextRepoId = workflow.workflowId;
     let nextConfig: WorkflowConfig | null = null;
     try {
@@ -274,13 +361,33 @@ export function WorkflowsPage() {
     }
 
     if (!nextConfig) {
+      let serverDetail: WorkflowVersionDetails | null = null;
+      if (token) {
+        try {
+          const payload = await apiFetch<unknown>(`/workflows/${nextRepoId}`, {}, token);
+          serverDetail = normalizeWorkflowVersionDetails(payload);
+        } catch {
+          serverDetail = null;
+        }
+      }
+
       const base = createDefaultWorkflowConfig();
-      nextConfig = {
-        ...base,
-        id: nextRepoId,
-        name: workflow.name,
-        description: workflow.description ?? ""
-      };
+      if (serverDetail?.steps && serverDetail.steps.length > 0) {
+        nextConfig = {
+          ...base,
+          id: nextRepoId,
+          name: serverDetail.name ?? workflow.name,
+          description: serverDetail.description ?? workflow.description ?? "",
+          graph: buildGraphFromPublishedSteps(serverDetail.steps)
+        };
+      } else {
+        nextConfig = {
+          ...base,
+          id: nextRepoId,
+          name: workflow.name,
+          description: workflow.description ?? ""
+        };
+      }
     } else {
       nextConfig = {
         ...nextConfig,
@@ -469,6 +576,72 @@ export function WorkflowsPage() {
     }
   }
 
+  async function runInWarRoom(draftOverride?: WorkflowConfig) {
+    setStatus(null);
+    setError(null);
+
+    try {
+      const payload = await apiFetch<{ runId: string }>(
+        "/api/runs",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            draftWorkflow: draftOverride ?? config
+          })
+        },
+        token ?? undefined
+      );
+
+      navigate(`/war-room?runId=${encodeURIComponent(payload.runId)}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to launch War Room run");
+    }
+  }
+
+  async function deleteActiveRepository() {
+    setStatus(null);
+    setError(null);
+
+    if (!canSave) {
+      setError("Only BUILDER or ADMIN role can delete a repository.");
+      return;
+    }
+
+    if (!activeRepoId) {
+      setError("Open a repository in Builder before deleting.");
+      return;
+    }
+
+    const confirmDelete = window.confirm(
+      `Delete repository "${config.name || activeRepoId}"? This will remove all published versions.`
+    );
+    if (!confirmDelete) {
+      return;
+    }
+
+    try {
+      await apiFetch<{ ok: boolean; workflowId: string; name?: string | null; deletedVersions: number }>(
+        `/workflows/${encodeURIComponent(activeRepoId)}`,
+        { method: "DELETE" },
+        token ?? undefined
+      );
+
+      window.localStorage.removeItem(repoDraftStorageKey(activeRepoId));
+      setConfig(createDefaultWorkflowConfig());
+      setActiveRepoId(null);
+      setSelectedWorkflowId(null);
+      setExpandedWorkflowId(null);
+      setBuilderUnlocked(false);
+      setPageMode("dashboard");
+      setPublishedWorkflowId(null);
+      setPublishedVersion(null);
+      await loadWorkflows();
+      setStatus(`Deleted repository ${config.name || activeRepoId}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete repository");
+    }
+  }
+
   function toggleAiTool(toolId: string) {
     setAiAllowedTools((current) =>
       current.includes(toolId) ? current.filter((item) => item !== toolId) : [...current, toolId]
@@ -544,24 +717,99 @@ export function WorkflowsPage() {
     setError(null);
   }
 
+  function loadEmbeddedSupplierWorkflow() {
+    const seed = Math.random().toString(36).slice(2, 8);
+    const startId = `node_start_${seed}`;
+    const monitorId = `node_monitor_${seed}`;
+    const riskId = `node_risk_${seed}`;
+    const approvalId = `node_approval_${seed}`;
+    const alertId = `node_alert_${seed}`;
+    const reportId = `node_report_${seed}`;
+    const outputId = `node_output_${seed}`;
+    const next = createDefaultWorkflowConfig();
+
+    const nextConfig: WorkflowConfig = {
+      ...next,
+      name: "Supplier Delay Monitor",
+      description: "Internal workflow for supplier-delay monitoring, risk scoring, and procurement alerts.",
+      agentType: "Ops/DevOps",
+      llmProvider: "openai",
+      llmModel: "gpt-4.1-mini",
+      tools: next.tools.map((tool) => ({
+        ...tool,
+        enabled: ["database", "http_requests", "calendar_email"].includes(tool.id)
+      })),
+      graph: {
+        nodes: [
+          { id: startId, type: "start", position: { x: 80, y: 180 }, config: { label: "Start" } },
+          {
+            id: monitorId,
+            type: "tool",
+            position: { x: 320, y: 180 },
+            config: { label: "Supplier Data API", description: "Pull delay and ETA events.", toolId: "http_requests" }
+          },
+          {
+            id: riskId,
+            type: "llm",
+            position: { x: 560, y: 180 },
+            config: { label: "Risk Analysis Agent", description: "Score severity and downstream impact." }
+          },
+          {
+            id: approvalId,
+            type: "router",
+            position: { x: 800, y: 180 },
+            config: { label: "Approval Gate", description: "Require manager approval for high-risk alerts." }
+          },
+          {
+            id: alertId,
+            type: "tool",
+            position: { x: 1040, y: 120 },
+            config: { label: "Alert System", description: "Notify procurement and operations.", toolId: "calendar_email" }
+          },
+          {
+            id: reportId,
+            type: "llm",
+            position: { x: 1040, y: 250 },
+            config: { label: "Dashboard Report", description: "Generate concise impact summary." }
+          },
+          { id: outputId, type: "output", position: { x: 1280, y: 180 }, config: { label: "Output" } }
+        ],
+        edges: [
+          { id: `edge_${seed}_1`, source: startId, target: monitorId },
+          { id: `edge_${seed}_2`, source: monitorId, target: riskId },
+          { id: `edge_${seed}_3`, source: riskId, target: approvalId },
+          { id: `edge_${seed}_4`, source: approvalId, target: alertId },
+          { id: `edge_${seed}_5`, source: approvalId, target: reportId },
+          { id: `edge_${seed}_6`, source: alertId, target: outputId },
+          { id: `edge_${seed}_7`, source: reportId, target: outputId }
+        ]
+      }
+    };
+
+    setConfig(nextConfig);
+    setActiveRepoId(nextConfig.id);
+    setSelectedWorkflowId(nextConfig.id);
+    setBuilderUnlocked(true);
+    setPageMode("builder");
+    setMode("flowchart");
+    setPublishedWorkflowId(null);
+    setPublishedVersion(null);
+    window.localStorage.setItem(repoDraftStorageKey(nextConfig.id), JSON.stringify(nextConfig));
+    setStatus("Embedded supplier-delay workflow loaded into Builder.");
+    setError(null);
+  }
+
   return (
     <div className="space-y-4">
       <section className="rounded border border-slate-200 bg-white p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold">Workflows</h2>
+            <h2 className="text-base font-semibold text-black">Workflows</h2>
             <p className="text-xs text-slate-500">
               Dashboard lists all saved workflows. Builder edits your draft graph and config.
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              className={`rounded px-3 py-1 text-sm ${pageMode === "dashboard" ? "bg-accent text-white" : "bg-slate-100"}`}
-              onClick={() => setPageMode("dashboard")}
-              type="button"
-            >
-              Dashboard
-            </button>
             <button
               className={`rounded px-3 py-1 text-sm ${
                 pageMode === "builder" ? "bg-accent text-white" : "bg-slate-100"
@@ -575,6 +823,13 @@ export function WorkflowsPage() {
               type="button"
             >
               Builder
+            </button>
+            <button
+              className={`rounded px-3 py-1 text-sm ${pageMode === "dashboard" ? "bg-accent text-white" : "bg-slate-100"}`}
+              onClick={() => setPageMode("dashboard")}
+              type="button"
+            >
+              Dashboard
             </button>
             <button
               className="rounded border border-slate-300 px-3 py-1 text-sm"
@@ -681,10 +936,15 @@ export function WorkflowsPage() {
                       <Fragment key={workflow.workflowId}>
                         <tr
                           className={`border-t border-slate-200 align-top ${
-                            selectedWorkflowId === workflow.workflowId ? "bg-cyan-50" : "hover:bg-slate-50"
+                            selectedWorkflowId === workflow.workflowId ? "bg-orange-50" : "hover:bg-slate-50"
                           }`}
                           onClick={() => setSelectedWorkflowId(workflow.workflowId)}
-                          onDoubleClick={() => openWorkflowInBuilder(workflow)}
+                          onDoubleClick={() => {
+                            openWorkflowInBuilder(workflow).catch((err) => {
+                              const message = err instanceof Error ? err.message : "Failed to open workflow in builder";
+                              setError(message);
+                            });
+                          }}
                         >
                           <td className="px-3 py-2 font-medium text-slate-900">{workflow.name}</td>
                           <td className="px-3 py-2 text-slate-600">{workflow.description ?? "No description"}</td>
@@ -705,7 +965,7 @@ export function WorkflowsPage() {
                                 title="Copy workflow ID"
                                 type="button"
                               >
-                                ⧉
+                                樹?
                               </button>
                             </div>
                           </td>
@@ -773,246 +1033,286 @@ export function WorkflowsPage() {
             <p className="mt-2 text-xs text-slate-500">
               Double-click a workflow row to open Builder with that workflow selected.
             </p>
+
+            <div className="mt-6 rounded border border-orange-200 bg-orange-50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-orange-900">Embedded Internal Workflow</h3>
+                  <p className="text-xs text-orange-800">
+                    Use the guided enterprise flow below, then launch directly into the visual builder.
+                  </p>
+                </div>
+                <button
+                  className="rounded bg-orange-600 px-3 py-1 text-xs font-medium text-white hover:bg-orange-700"
+                  onClick={loadEmbeddedSupplierWorkflow}
+                  type="button"
+                >
+                  Load Supplier Workflow
+                </button>
+              </div>
+              <div className="mt-3 grid gap-2 md:grid-cols-5">
+                {EMBEDDED_WORKFLOW_STEPS.map((step, index) => (
+                  <div className="rounded border border-orange-200 bg-white p-2" key={step.title}>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-orange-700">Step {index + 1}</div>
+                    <div className="text-xs font-semibold text-slate-800">{step.title}</div>
+                    <p className="mt-1 text-[11px] text-slate-600">{step.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           </section>
         </>
       ) : (
         <>
-          <section className="rounded border border-slate-200 bg-white p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-semibold">Agent Workflow Builder - Step 1</h3>
-                <p className="text-xs text-slate-500">
-                  Choose Agent Type + Core Tools. Modes stay synchronized through one shared JSON schema.
-                </p>
+          <section className="rounded border border-slate-200 bg-white p-2">
+            <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr),340px]">
+              <div className="min-w-0">
+                {mode === "flowchart" ? (
+                  <FlowBuilder config={config} onConfigChange={setConfig} />
+                ) : (
+                  <DevBuilder config={config} onConfigChange={setConfig} />
+                )}
               </div>
-              <div className="grid w-full gap-2 md:max-w-[540px] md:grid-cols-2">
-                <label className="text-xs">
-                  <div className="mb-1 text-slate-600">Repository Name</div>
-                  <input
-                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                    onChange={(event) => setConfig((current) => ({ ...current, name: event.target.value }))}
-                    value={config.name}
-                  />
-                </label>
-                <label className="text-xs">
-                  <div className="mb-1 text-slate-600">Repository Description</div>
-                  <input
-                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                    onChange={(event) => setConfig((current) => ({ ...current, description: event.target.value }))}
-                    value={config.description ?? ""}
-                  />
-                </label>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  className={`rounded px-3 py-1 text-sm ${mode === "flowchart" ? "bg-accent text-white" : "bg-slate-100"}`}
-                  onClick={() => setMode("flowchart")}
-                  type="button"
-                >
-                  Flowchart
-                </button>
-                <button
-                  className={`rounded px-3 py-1 text-sm ${mode === "developer" ? "bg-accent text-white" : "bg-slate-100"}`}
-                  onClick={() => setMode("developer")}
-                  type="button"
-                >
-                  Developer
-                </button>
-                <button className="rounded border border-slate-300 px-3 py-1 text-sm" onClick={resetDraft} type="button">
-                  Reset
-                </button>
-                <button
-                  className="rounded bg-slate-900 px-3 py-1 text-sm text-white"
-                  disabled={!canSave}
-                  onClick={saveDraft}
-                  type="button"
-                >
-                  Save Draft
-                </button>
-                <input
-                  className="w-[220px] rounded border border-slate-300 px-2 py-1 text-sm"
-                  onChange={(event) => setCommitMessage(event.target.value)}
-                  placeholder="Publish changelog"
-                  value={commitMessage}
-                />
-                <button
-                  className="rounded bg-emerald-700 px-3 py-1 text-sm text-white"
-                  disabled={!canSave}
-                  onClick={publishWorkflow}
-                  type="button"
-                >
-                  Publish
-                </button>
-                <button
-                  className="rounded bg-indigo-700 px-3 py-1 text-sm text-white"
-                  onClick={runLatest}
-                  type="button"
-                >
-                  Run Latest
-                </button>
-              </div>
-            </div>
 
-            <div className="mt-3 grid gap-2 text-xs text-slate-600 md:grid-cols-2">
-              <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1">
-                Validation: {graphValidation.valid ? "Passed" : graphValidation.errors.join(" ")}
-              </div>
-              <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1">
-                Last API draft: {serverDraftUpdatedAt ?? "none"}
-              </div>
-              <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1">
-                Last publish: {publishedWorkflowId && publishedVersion ? `${publishedWorkflowId} v${publishedVersion}` : "none"}
-              </div>
-            </div>
-          </section>
-
-          <section className="rounded border border-slate-200 bg-white p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold">AI Builder</h3>
-              <div className="flex gap-2">
-                <button
-                  className="rounded border border-slate-300 px-2 py-1 text-xs"
-                  onClick={() => setAiPrompt("Build an ops runbook that monitors supplier delays, summarizes impact, and asks approval before any external update.")}
-                  type="button"
-                >
-                  Ops preset
-                </button>
-                <button
-                  className="rounded border border-slate-300 px-2 py-1 text-xs"
-                  onClick={() => setAiPrompt("Create a research memo workflow that gathers web sources, compares options, and outputs an executive summary.")}
-                  type="button"
-                >
-                  Research preset
-                </button>
-                <button
-                  className="rounded border border-slate-300 px-2 py-1 text-xs"
-                  onClick={() => setAiPrompt("Create a data analysis workflow that reads DB metrics, computes trends, and requires approval before writing files.")}
-                  type="button"
-                >
-                  Data preset
-                </button>
-              </div>
-            </div>
-            <div className="mt-3 grid gap-3 md:grid-cols-3">
-              <label className="text-xs">
-                <div className="mb-1 text-slate-600">Goal template</div>
-                <select
-                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                  onChange={(event) => setAiTemplate(event.target.value as AiTemplate)}
-                  value={aiTemplate}
-                >
-                  <option value="ops_runbook">Ops runbook</option>
-                  <option value="research_memo">Research memo</option>
-                  <option value="data_analysis">Data analysis</option>
-                  <option value="code_helper">Code helper</option>
-                </select>
-              </label>
-              <label className="text-xs">
-                <div className="mb-1 text-slate-600">Risk level</div>
-                <select
-                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                  onChange={(event) => setAiRiskLevel(event.target.value as AiRisk)}
-                  value={aiRiskLevel}
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
-              </label>
-              <label className="text-xs">
-                <div className="mb-1 text-slate-600">Provider</div>
-                <select
-                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                  onChange={(event) => setAiProvider(event.target.value as AiProvider)}
-                  value={aiProvider}
-                >
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="gemini">Gemini</option>
-                </select>
-              </label>
-            </div>
-
-            <label className="mt-3 block text-xs">
-              <div className="mb-1 text-slate-600">Describe what you want</div>
-              <textarea
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                onChange={(event) => setAiPrompt(event.target.value)}
-                placeholder="I need a workflow that monitors X, summarizes Y, asks for approval before sending Z."
-                rows={3}
-                value={aiPrompt}
-              />
-            </label>
-
-            <div className="mt-3">
-              <div className="mb-1 text-xs text-slate-600">Allowed tools</div>
-              <div className="flex flex-wrap gap-2">
-                {AI_TOOL_CHOICES.map((tool) => (
-                  <label className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-xs" key={tool.id}>
+              <aside className="space-y-3 xl:sticky xl:top-3">
+                <section className="rounded border border-slate-700 bg-slate-900 p-2 text-slate-100">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs font-semibold tracking-wide text-slate-300">Workflow Studio</span>
+                    <div className="flex items-center overflow-hidden rounded border border-slate-600">
+                      <button
+                        className={`px-2 py-1 text-[11px] ${mode === "flowchart" ? "bg-orange-600 text-white" : "bg-slate-800 text-slate-300"}`}
+                        onClick={() => setMode("flowchart")}
+                        type="button"
+                      >
+                        Flow
+                      </button>
+                      <button
+                        className={`border-l border-slate-600 px-2 py-1 text-[11px] ${mode === "developer" ? "bg-orange-600 text-white" : "bg-slate-800 text-slate-300"}`}
+                        onClick={() => setMode("developer")}
+                        type="button"
+                      >
+                        Dev
+                      </button>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
                     <input
-                      checked={aiAllowedTools.includes(tool.id)}
-                      onChange={() => toggleAiTool(tool.id)}
-                      type="checkbox"
+                      className="h-7 w-full rounded border border-slate-600 bg-slate-800 px-2 text-xs text-slate-100"
+                      onChange={(event) => setConfig((current) => ({ ...current, name: event.target.value }))}
+                      placeholder="Repository name"
+                      value={config.name}
                     />
-                    {tool.label}
-                  </label>
-                ))}
-              </div>
+                    <input
+                      className="h-7 w-full rounded border border-slate-600 bg-slate-800 px-2 text-xs text-slate-100"
+                      onChange={(event) => setConfig((current) => ({ ...current, description: event.target.value }))}
+                      placeholder="Description"
+                      value={config.description ?? ""}
+                    />
+                    <input
+                      className="h-7 w-full rounded border border-slate-600 bg-slate-800 px-2 text-xs text-slate-100"
+                      onChange={(event) => setCommitMessage(event.target.value)}
+                      placeholder="Publish changelog"
+                      value={commitMessage}
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        className="rounded border border-slate-500 bg-slate-800 px-2 py-1 text-xs"
+                        onClick={resetDraft}
+                        type="button"
+                      >
+                        Reset
+                      </button>
+                      <button
+                        className="rounded border border-slate-500 bg-slate-800 px-2 py-1 text-xs"
+                        disabled={!canSave}
+                        onClick={saveDraft}
+                        type="button"
+                      >
+                        Save
+                      </button>
+                      <button
+                        className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white"
+                        disabled={!canSave}
+                        onClick={publishWorkflow}
+                        type="button"
+                      >
+                        Publish
+                      </button>
+                      <button
+                        className="rounded bg-orange-700 px-2 py-1 text-xs font-medium text-white"
+                        onClick={runLatest}
+                        type="button"
+                      >
+                        Run Latest
+                      </button>
+                      <button
+                        className="col-span-2 rounded bg-orange-600 px-2 py-1 text-xs font-medium text-white"
+                        onClick={() => {
+                          runInWarRoom().catch((err) => {
+                            setError(err instanceof Error ? err.message : "Failed to launch War Room run");
+                          });
+                        }}
+                        type="button"
+                      >
+                        Run in War Room
+                      </button>
+                      <button
+                        className="col-span-2 rounded bg-rose-700 px-2 py-1 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={!canSave || !activeRepoId}
+                        onClick={() => {
+                          deleteActiveRepository().catch((err) => {
+                            setError(err instanceof Error ? err.message : "Failed to delete repository");
+                          });
+                        }}
+                        type="button"
+                      >
+                        Delete Repository
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1 text-[11px]">
+                      <span className={`rounded px-2 py-0.5 ${graphValidation.valid ? "bg-emerald-800" : "bg-rose-800"}`}>
+                        {graphValidation.valid ? "Graph OK" : "Graph Invalid"}
+                      </span>
+                      <span className="rounded bg-slate-800 px-2 py-0.5">Draft: {serverDraftUpdatedAt ?? "none"}</span>
+                      <span className="rounded bg-slate-800 px-2 py-0.5">
+                        Pub: {publishedWorkflowId && publishedVersion ? `v${publishedVersion}` : "none"}
+                      </span>
+                    </div>
+                    {!graphValidation.valid ? (
+                      <div className="rounded bg-rose-900/70 px-2 py-1 text-[11px] text-rose-100">
+                        {graphValidation.errors.join(" ")}
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+
+                <section className="rounded border border-slate-300 bg-slate-100 p-2">
+                  <div className="mb-2 text-xs font-semibold text-slate-700">AI Copilot</div>
+                  <div className="grid grid-cols-3 gap-1">
+                    <select
+                      className="h-7 rounded border border-slate-300 bg-white px-2 text-xs"
+                      onChange={(event) => setAiTemplate(event.target.value as AiTemplate)}
+                      value={aiTemplate}
+                    >
+                      <option value="ops_runbook">Ops</option>
+                      <option value="research_memo">Research</option>
+                      <option value="data_analysis">Data</option>
+                      <option value="code_helper">Code</option>
+                    </select>
+                    <select
+                      className="h-7 rounded border border-slate-300 bg-white px-2 text-xs"
+                      onChange={(event) => setAiRiskLevel(event.target.value as AiRisk)}
+                      value={aiRiskLevel}
+                    >
+                      <option value="low">Risk Low</option>
+                      <option value="medium">Risk Med</option>
+                      <option value="high">Risk High</option>
+                    </select>
+                    <select
+                      className="h-7 rounded border border-slate-300 bg-white px-2 text-xs"
+                      onChange={(event) => setAiProvider(event.target.value as AiProvider)}
+                      value={aiProvider}
+                    >
+                      <option value="openai">OpenAI</option>
+                      <option value="anthropic">Anthropic</option>
+                      <option value="gemini">Gemini</option>
+                    </select>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {AI_TOOL_CHOICES.map((tool) => (
+                      <button
+                        className={`rounded border px-2 py-1 text-[11px] ${
+                          aiAllowedTools.includes(tool.id)
+                            ? "border-orange-600 bg-orange-50 text-orange-800"
+                            : "border-slate-300 bg-white text-slate-600"
+                        }`}
+                        key={tool.id}
+                        onClick={() => toggleAiTool(tool.id)}
+                        type="button"
+                      >
+                        {tool.label}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    className="mt-2 h-8 w-full rounded border border-slate-300 px-2 text-xs"
+                    onChange={(event) => setAiPrompt(event.target.value)}
+                    placeholder="Describe workflow intent..."
+                    value={aiPrompt}
+                  />
+                  <input
+                    className="mt-2 h-8 w-full rounded border border-slate-300 px-2 text-xs"
+                    onChange={(event) => setAiFeedback(event.target.value)}
+                    placeholder="Refinement feedback..."
+                    value={aiFeedback}
+                  />
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button
+                      className="rounded bg-slate-900 px-3 py-1 text-xs text-white disabled:opacity-50"
+                      disabled={aiBusy}
+                      onClick={() => generateWithAi("generate")}
+                      type="button"
+                    >
+                      {aiBusy ? "Generating..." : "Generate"}
+                    </button>
+                    <button
+                      className="rounded bg-slate-700 px-3 py-1 text-xs text-white disabled:opacity-50"
+                      disabled={aiBusy}
+                      onClick={() => generateWithAi("refine")}
+                      type="button"
+                    >
+                      {aiBusy ? "Refining..." : "Refine"}
+                    </button>
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-1">
+                    <button
+                      className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                      onClick={() =>
+                        setAiPrompt("Build an ops runbook that monitors supplier delays, summarizes impact, and asks approval before any external update.")
+                      }
+                      type="button"
+                    >
+                      Ops
+                    </button>
+                    <button
+                      className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                      onClick={() =>
+                        setAiPrompt("Create a research memo workflow that gathers web sources, compares options, and outputs an executive summary.")
+                      }
+                      type="button"
+                    >
+                      Research
+                    </button>
+                    <button
+                      className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                      onClick={() =>
+                        setAiPrompt("Create a data analysis workflow that reads DB metrics, computes trends, and requires approval before writing files.")
+                      }
+                      type="button"
+                    >
+                      Data
+                    </button>
+                  </div>
+                  {aiNotes.length > 0 || aiRisks.length > 0 ? (
+                    <div className="mt-2 space-y-1 text-[11px]">
+                      {aiNotes.length > 0 ? (
+                        <div className="rounded border border-slate-300 bg-white px-2 py-1 text-slate-700">Notes: {aiNotes.join(" | ")}</div>
+                      ) : null}
+                      {aiRisks.length > 0 ? (
+                        <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800">Risks: {aiRisks.join(" | ")}</div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </section>
+
+                <details className="rounded border border-slate-200 bg-white p-2">
+                  <summary className="cursor-pointer text-xs font-semibold text-slate-700">Draft JSON</summary>
+                  <pre className="mt-2 max-h-[240px] overflow-auto rounded bg-slate-900 p-2 text-[11px] text-slate-100">
+                    {JSON.stringify(config, null, 2)}
+                  </pre>
+                </details>
+              </aside>
             </div>
-
-            <label className="mt-3 block text-xs">
-              <div className="mb-1 text-slate-600">Refinement feedback</div>
-              <textarea
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                onChange={(event) => setAiFeedback(event.target.value)}
-                placeholder="Refine: make steps shorter and add approval only before risky actions."
-                rows={2}
-                value={aiFeedback}
-              />
-            </label>
-
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button
-                className="rounded bg-slate-900 px-3 py-1 text-sm text-white disabled:opacity-50"
-                disabled={aiBusy}
-                onClick={() => generateWithAi("generate")}
-                type="button"
-              >
-                {aiBusy ? "Generating..." : "Generate Draft"}
-              </button>
-              <button
-                className="rounded bg-slate-700 px-3 py-1 text-sm text-white disabled:opacity-50"
-                disabled={aiBusy}
-                onClick={() => generateWithAi("refine")}
-                type="button"
-              >
-                {aiBusy ? "Refining..." : "Refine"}
-              </button>
-            </div>
-
-            {aiNotes.length > 0 ? (
-              <div className="mt-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-                Notes: {aiNotes.join(" | ")}
-              </div>
-            ) : null}
-            {aiRisks.length > 0 ? (
-              <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                Risks: {aiRisks.join(" | ")}
-              </div>
-            ) : null}
-          </section>
-
-          {mode === "flowchart" ? (
-            <FlowBuilder config={config} onConfigChange={setConfig} />
-          ) : (
-            <DevBuilder config={config} onConfigChange={setConfig} />
-          )}
-
-          <section className="rounded border border-slate-200 bg-white p-4">
-            <h3 className="text-sm font-semibold">Preview JSON</h3>
-            <pre className="mt-2 max-h-[360px] overflow-auto rounded bg-slate-900 p-3 text-xs text-slate-100">
-              {JSON.stringify(config, null, 2)}
-            </pre>
           </section>
         </>
       )}
@@ -1022,3 +1322,6 @@ export function WorkflowsPage() {
     </div>
   );
 }
+
+
+

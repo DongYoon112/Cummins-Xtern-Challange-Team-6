@@ -348,6 +348,45 @@ function createRegistryServer() {
   );
 
   server.registerTool(
+    "delete_workflow",
+    {
+      title: "Delete Workflow",
+      description: "Delete a workflow repository and all of its versions",
+      inputSchema: {
+        teamId: z.string().min(1),
+        workflowId: z.string().min(1)
+      }
+    },
+    async ({ teamId, workflowId }) => {
+      const existing = db
+        .prepare("SELECT id, name, team_id AS teamId FROM workflows WHERE id = ? LIMIT 1")
+        .get(workflowId) as { id: string; name: string; teamId: string } | undefined;
+
+      if (!existing || existing.teamId !== teamId) {
+        throw new Error("Workflow not found");
+      }
+
+      const tx = db.transaction(() => {
+        const deletedVersions = db
+          .prepare("DELETE FROM workflow_versions WHERE workflow_id = ?")
+          .run(workflowId).changes;
+        const deletedWorkflows = db
+          .prepare("DELETE FROM workflows WHERE id = ? AND team_id = ?")
+          .run(workflowId, teamId).changes;
+
+        return {
+          ok: deletedWorkflows > 0,
+          workflowId,
+          name: existing.name,
+          deletedVersions
+        };
+      });
+
+      return jsonResult(tx());
+    }
+  );
+
+  server.registerTool(
     "list_agents",
     {
       title: "List Agents",

@@ -2,6 +2,7 @@ import { askProviderForJson } from "../lib/providers";
 import type { ServerTeamSettings } from "../lib/settings";
 import { db } from "../lib/db";
 import { executeReadOnlyExternalQuery } from "../lib/externalDb";
+import { DEFAULT_MODELS, type Provider } from "@agentfoundry/shared";
 
 type TaskResult = {
   output: Record<string, unknown>;
@@ -89,7 +90,13 @@ export async function runTaskAgent(params: {
     stepParams.mode === "external_db_query";
   if (databaseMode && typeof stepParams.query === "string") {
     const connectionString =
-      String(stepParams.connectionString ?? runContext.databaseConnectionString ?? process.env.EXTERNAL_DB_URL ?? "");
+      String(
+        stepParams.connectionString ??
+          runContext.databaseConnectionString ??
+          teamSettings.externalDbUrl ??
+          process.env.EXTERNAL_DB_URL ??
+          ""
+      );
     if (!connectionString) {
       return {
         output: {
@@ -359,6 +366,178 @@ export async function runTaskAgent(params: {
     };
   }
 
+  if (agentName === "Debate Agent") {
+    const rawParticipants = Array.isArray(stepParams.participants) ? stepParams.participants : [];
+    const participants = rawParticipants
+      .map((entry) => (typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {}))
+      .map((entry) => {
+        const provider = String(entry.provider ?? "").toLowerCase();
+        if (provider !== "openai" && provider !== "anthropic" && provider !== "gemini") {
+          return null;
+        }
+        const p = provider as Provider;
+        const model = String(entry.model ?? DEFAULT_MODELS[p]);
+        const stance = typeof entry.stance === "string" ? entry.stance : "";
+        return { provider: p, model, stance };
+      })
+      .filter((item): item is { provider: Provider; model: string; stance: string } => Boolean(item));
+
+    const debateParticipants =
+      participants.length > 0
+        ? participants
+        : (["openai", "anthropic", "gemini"] as Provider[]).map((provider) => ({
+            provider,
+            model: teamSettings.defaultProvider === provider ? teamSettings.defaultModel : DEFAULT_MODELS[provider],
+            stance: ""
+          }));
+
+    const topic = String(
+      stepParams.debateTopic ??
+        stepParams.prompt ??
+        runContext.lastSummary ??
+        runContext.orderId ??
+        "Evaluate options and produce a final recommendation."
+    );
+    const rounds = Math.max(1, Number(stepParams.debateRounds ?? 1) || 1);
+
+    const argumentsByModel: Array<{
+      provider: Provider;
+      model: string;
+      stance?: string;
+      summary: string;
+      rationale: string;
+      confidence: number;
+      mockMode: boolean;
+    }> = [];
+
+    for (let round = 1; round <= rounds; round += 1) {
+      for (const participant of debateParticipants) {
+        const key = teamSettings.keys[participant.provider];
+        const participantLabel = `${participant.provider}/${participant.model}`;
+        if (!key) {
+          argumentsByModel.push({
+            provider: participant.provider,
+            model: participant.model,
+            stance: participant.stance || undefined,
+            summary: `(${participantLabel}) mock stance: ${participant.stance || "balanced"} on "${topic}"`,
+            rationale: "No provider key configured. Used deterministic mock argument.",
+            confidence: 0.55,
+            mockMode: true
+          });
+          continue;
+        }
+
+        const priorArguments =
+          argumentsByModel.length === 0
+            ? "No prior arguments."
+            : argumentsByModel
+                .slice(-Math.max(0, debateParticipants.length))
+                .map((arg) => `${arg.provider}/${arg.model}: ${arg.summary}`)
+                .join("\n");
+
+        const envelope = await askProviderForJson({
+          provider: participant.provider,
+          model: participant.model,
+          apiKey: key,
+          prompt: [
+            `Debate topic: ${topic}`,
+            `Round: ${round}`,
+            participant.stance ? `Preferred stance: ${participant.stance}` : "Preferred stance: balanced",
+            `Run context: ${JSON.stringify(runContext).slice(0, 1500)}`,
+            `Previous arguments:\n${priorArguments}`,
+            "Provide your concise argument."
+          ].join("\n")
+        });
+
+        if (!envelope) {
+          argumentsByModel.push({
+            provider: participant.provider,
+            model: participant.model,
+            stance: participant.stance || undefined,
+            summary: `(${participantLabel}) failed to generate argument; fallback argument applied.`,
+            rationale: "Provider call failed.",
+            confidence: 0.5,
+            mockMode: false
+          });
+          continue;
+        }
+
+        argumentsByModel.push({
+          provider: participant.provider,
+          model: participant.model,
+          stance: participant.stance || undefined,
+          summary: envelope.summary,
+          rationale: envelope.rationale,
+          confidence: envelope.confidence,
+          mockMode: false
+        });
+      }
+    }
+
+    const best = argumentsByModel.reduce(
+      (current, candidate) => (candidate.confidence > current.confidence ? candidate : current),
+      argumentsByModel[0]
+    );
+
+    const arbiterProvider = teamSettings.defaultProvider;
+    const arbiterModel = teamSettings.defaultModel;
+    const arbiterKey = teamSettings.keys[arbiterProvider];
+
+    let finalRecommendation = best?.summary ?? "No recommendation.";
+    let finalRationale = best?.rationale ?? "No arguments generated.";
+    let finalConfidence = best?.confidence ?? 0.5;
+    let synthesisMode: "llm" | "fallback" = "fallback";
+
+    if (arbiterKey && argumentsByModel.length > 0) {
+      const synthesis = await askProviderForJson({
+        provider: arbiterProvider,
+        model: arbiterModel,
+        apiKey: arbiterKey,
+        prompt: [
+          `You are the final arbiter for a multi-model debate.`,
+          `Topic: ${topic}`,
+          `Arguments:`,
+          ...argumentsByModel.map(
+            (arg, index) =>
+              `${index + 1}. ${arg.provider}/${arg.model} [conf ${arg.confidence.toFixed(2)}]: ${arg.summary}`
+          ),
+          "Return final recommendation and rationale."
+        ].join("\n")
+      });
+
+      if (synthesis) {
+        finalRecommendation = synthesis.summary;
+        finalRationale = synthesis.rationale;
+        finalConfidence = Math.max(finalConfidence, synthesis.confidence);
+        synthesisMode = "llm";
+      }
+    }
+
+    toolCalls.push({
+      server: "multi-model",
+      tool: "debate",
+      args: {
+        rounds,
+        participants: debateParticipants.map((item) => `${item.provider}/${item.model}`)
+      }
+    });
+
+    return {
+      output: {
+        topic,
+        rounds,
+        participants: debateParticipants,
+        arguments: argumentsByModel,
+        finalRecommendation,
+        synthesisMode
+      },
+      confidence: clamp(finalConfidence),
+      rationale: finalRationale,
+      toolCalls,
+      mockMode: argumentsByModel.every((item) => item.mockMode)
+    };
+  }
+
   if (agentName === "Notification Agent") {
     const summary = String(runContext.lastSummary ?? "Workflow completed");
     const destination = String(runContext.destination ?? "Operations Team");
@@ -366,7 +545,7 @@ export async function runTaskAgent(params: {
     const draftOutput = {
       channel: String(stepParams.channel ?? "email"),
       recipientGroup: destination,
-      message: `Action summary: ${summary}. Review run details in AgentFoundry.`
+      message: `Action summary: ${summary}. Review run details in Orange Lantern.`
     };
 
     const baseConfidence = 0.93;

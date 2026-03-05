@@ -11,11 +11,13 @@ import { db, initApiDb } from "./lib/db";
 import { authRequired, signToken } from "./lib/auth";
 import { requireRoles } from "./lib/rbac";
 import { callMcpTool } from "./lib/mcpClient";
-import { getTeamSettingsForClient, getTeamSettingsForServer, saveProviderKey, updateProviderDefaults } from "./lib/settings";
+import { getTeamSettingsForClient, getTeamSettingsForServer, saveExternalDbUrl, saveProviderKey, updateProviderDefaults } from "./lib/settings";
 import { testProviderConnection } from "./lib/providers";
 import { orchestrator } from "./agents/orchestrator";
 import { compileWorkflowDraft } from "./lib/workflowCompiler";
 import { DraftGenerateInputSchema, generateWorkflowDraft } from "./lib/draftGenerator";
+import { executeReadOnlyExternalQuery } from "./lib/externalDb";
+import { runsRouter } from "./routes/runs";
 
 loadEnv();
 loadEnv({ path: path.resolve(fileURLToPath(new URL("../../../.env", import.meta.url))) });
@@ -76,6 +78,7 @@ app.get("/auth/me", authRequired, (req, res) => {
 });
 
 app.use(authRequired);
+app.use("/api/runs", runsRouter);
 
 app.get("/agents", async (req, res) => {
   try {
@@ -266,7 +269,8 @@ app.post("/workflows/draft/generate", requireRoles("BUILDER"), async (req, res) 
   }
 
   try {
-    const teamSettings = getTeamSettingsForServer(req.user!.teamId);
+    const repoId = parsed.data.currentConfig?.id;
+    const teamSettings = getTeamSettingsForServer(req.user!.teamId, repoId);
     const generated = await generateWorkflowDraft(parsed.data, teamSettings);
     res.status(201).json(generated);
   } catch (error) {
@@ -290,6 +294,43 @@ app.get("/workflows/:workflowId", async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(404).json({ error: "Workflow version not found" });
+  }
+});
+
+app.delete("/workflows/:workflowId", requireRoles("BUILDER"), async (req, res) => {
+  const workflowId = String(req.params.workflowId ?? "").trim();
+  if (!workflowId) {
+    res.status(400).json({ error: "Missing workflowId" });
+    return;
+  }
+
+  try {
+    const payload = await callMcpTool<
+      { teamId: string; workflowId: string },
+      { ok: boolean; workflowId: string; name?: string; deletedVersions?: number }
+    >("registry", "delete_workflow", {
+      teamId: req.user!.teamId,
+      workflowId
+    });
+
+    db.prepare("DELETE FROM repo_settings WHERE team_id = ? AND repo_id = ?").run(req.user!.teamId, workflowId);
+    db.prepare("DELETE FROM approvals WHERE team_id = ? AND workflow_id = ?").run(req.user!.teamId, workflowId);
+    db.prepare("DELETE FROM workflow_drafts WHERE team_id = ? AND draft_id = ?").run(req.user!.teamId, workflowId);
+
+    res.json({
+      ok: payload.ok,
+      workflowId: payload.workflowId,
+      name: payload.name ?? null,
+      deletedVersions: payload.deletedVersions ?? 0
+    });
+  } catch (error) {
+    console.error(error);
+    const message = error instanceof Error ? error.message : "Failed to delete workflow";
+    if (message.includes("not found")) {
+      res.status(404).json({ error: "Workflow not found" });
+      return;
+    }
+    res.status(500).json({ error: "Failed to delete workflow" });
   }
 });
 
@@ -571,7 +612,8 @@ app.get("/audit/export", requireRoles("AUDITOR", "APPROVER", "BUILDER"), async (
 
 app.get("/settings", requireRoles("BUILDER"), (req, res) => {
   try {
-    const settings = getTeamSettingsForClient(req.user!.teamId);
+    const repoId = req.query.repoId ? String(req.query.repoId) : undefined;
+    const settings = getTeamSettingsForClient(req.user!.teamId, repoId);
     res.json(settings);
   } catch (error) {
     console.error(error);
@@ -581,7 +623,8 @@ app.get("/settings", requireRoles("BUILDER"), (req, res) => {
 
 const settingsKeySchema = z.object({
   provider: z.enum(["openai", "anthropic", "gemini"]),
-  key: z.string().min(1)
+  key: z.string().min(1),
+  repoId: z.string().min(1).optional()
 });
 
 app.post("/settings/key", requireRoles("BUILDER"), (req, res) => {
@@ -592,7 +635,7 @@ app.post("/settings/key", requireRoles("BUILDER"), (req, res) => {
   }
 
   try {
-    saveProviderKey(req.user!.teamId, parsed.data.provider, parsed.data.key);
+    saveProviderKey(req.user!.teamId, parsed.data.provider, parsed.data.key, parsed.data.repoId);
     res.json({ ok: true });
   } catch (error) {
     console.error(error);
@@ -602,7 +645,8 @@ app.post("/settings/key", requireRoles("BUILDER"), (req, res) => {
 
 const settingsDefaultsSchema = z.object({
   provider: z.enum(["openai", "anthropic", "gemini"]),
-  model: z.string().min(1)
+  model: z.string().min(1),
+  repoId: z.string().min(1).optional()
 });
 
 app.post("/settings/defaults", requireRoles("BUILDER"), (req, res) => {
@@ -613,7 +657,7 @@ app.post("/settings/defaults", requireRoles("BUILDER"), (req, res) => {
   }
 
   try {
-    updateProviderDefaults(req.user!.teamId, parsed.data.provider, parsed.data.model);
+    updateProviderDefaults(req.user!.teamId, parsed.data.provider, parsed.data.model, parsed.data.repoId);
     res.json({ ok: true });
   } catch (error) {
     console.error(error);
@@ -623,7 +667,8 @@ app.post("/settings/defaults", requireRoles("BUILDER"), (req, res) => {
 
 const settingsTestSchema = z.object({
   provider: z.enum(["openai", "anthropic", "gemini"]).optional(),
-  model: z.string().optional()
+  model: z.string().optional(),
+  repoId: z.string().min(1).optional()
 });
 
 app.post("/settings/test", requireRoles("BUILDER"), async (req, res) => {
@@ -634,7 +679,7 @@ app.post("/settings/test", requireRoles("BUILDER"), async (req, res) => {
   }
 
   try {
-    const settings = getTeamSettingsForServer(req.user!.teamId);
+    const settings = getTeamSettingsForServer(req.user!.teamId, parsed.data.repoId);
     const provider = parsed.data.provider ?? settings.defaultProvider;
     const model = parsed.data.model ?? settings.defaultModel;
     const apiKey = settings.keys[provider];
@@ -643,6 +688,63 @@ app.post("/settings/test", requireRoles("BUILDER"), async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Failed to test provider connection" });
+  }
+});
+
+const settingsExternalDbSchema = z.object({
+  url: z.string().default(""),
+  repoId: z.string().min(1).optional()
+});
+
+app.post("/settings/external-db", requireRoles("BUILDER"), (req, res) => {
+  const parsed = settingsExternalDbSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid external DB payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    saveExternalDbUrl(req.user!.teamId, parsed.data.url, parsed.data.repoId);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to save external DB URL" });
+  }
+});
+
+app.post("/settings/external-db/test", requireRoles("BUILDER"), async (req, res) => {
+  const overrideSchema = z.object({
+    url: z.string().optional(),
+    repoId: z.string().min(1).optional()
+  });
+  const parsed = overrideSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid external DB test payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const settings = getTeamSettingsForServer(req.user!.teamId, parsed.data.repoId);
+    const connectionString = parsed.data.url?.trim() || settings.externalDbUrl || process.env.EXTERNAL_DB_URL || "";
+    if (!connectionString) {
+      res.status(400).json({ ok: false, message: "No external DB URL configured." });
+      return;
+    }
+
+    const probe = await executeReadOnlyExternalQuery({
+      connectionString,
+      query: "SELECT 1 AS ok",
+      maxRows: 1
+    });
+    res.json({
+      ok: true,
+      engine: probe.engine,
+      message: `Connected successfully via ${probe.engine}.`
+    });
+  } catch (error) {
+    console.error(error);
+    const message = error instanceof Error ? error.message : "Connection test failed";
+    res.status(500).json({ ok: false, message });
   }
 });
 

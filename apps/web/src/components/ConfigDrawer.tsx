@@ -1,4 +1,11 @@
-import type { ToolId, WorkflowNode, WorkflowTool } from "../lib/workflowBuilderSchema";
+import {
+  LLM_MODEL_OPTIONS,
+  getDefaultModelForProvider,
+  type LlmProvider,
+  type ToolId,
+  type WorkflowNode,
+  type WorkflowTool
+} from "../lib/workflowBuilderSchema";
 
 type ConfigDrawerProps = {
   node: WorkflowNode | null;
@@ -20,11 +27,55 @@ function getNodeTitle(type: WorkflowNode["type"]) {
       return "Router/Condition Node";
     case "memory":
       return "Memory Node";
+    case "debate":
+      return "Multi-Agent Debate Node";
     case "output":
       return "Output Node";
     default:
       return "Node";
   }
+}
+
+function getNodeDescriptionSummary(node: WorkflowNode, tools: WorkflowTool[]) {
+  if (node.type === "start") {
+    return "Starts the workflow and passes initial context to downstream nodes.";
+  }
+
+  if (node.type === "llm") {
+    const provider = String(node.config.llmProvider ?? "").trim();
+    const model = String(node.config.llmModel ?? "").trim();
+    if (provider && model) {
+      return `Analyzes context with ${provider}/${model} and produces structured reasoning output.`;
+    }
+    return "Uses a language model to interpret context and generate the next decision or output.";
+  }
+
+  if (node.type === "tool") {
+    const toolId = String(node.config.toolId ?? "").trim();
+    const matchedTool = tools.find((tool) => tool.id === toolId);
+    if (matchedTool) {
+      return `Calls ${matchedTool.label} to fetch or update operational data for the workflow.`;
+    }
+    return "Executes an external tool or integration to retrieve or send workflow data.";
+  }
+
+  if (node.type === "router") {
+    const condition = String(node.config.condition ?? "").trim();
+    if (condition) {
+      return `Routes execution based on condition: ${condition}.`;
+    }
+    return "Evaluates rules and routes execution to the correct downstream path.";
+  }
+
+  if (node.type === "memory") {
+    return "Stores or retrieves memory state so future nodes can use prior context.";
+  }
+
+  if (node.type === "debate") {
+    return "Runs a multi-agent debate to compare alternatives before selecting a recommendation.";
+  }
+
+  return "Delivers the final workflow result to destination systems and user-facing views.";
 }
 
 export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode }: ConfigDrawerProps) {
@@ -43,12 +94,21 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
   const linkedToolId = String(node.config.toolId ?? "");
   const llmProvider = String(node.config.llmProvider ?? "");
   const llmModel = String(node.config.llmModel ?? "");
+  const hasKnownProvider = llmProvider === "openai" || llmProvider === "anthropic" || llmProvider === "gemini";
+  const providerModels = hasKnownProvider ? LLM_MODEL_OPTIONS[llmProvider as LlmProvider] : [];
+  const llmModelOptions =
+    llmModel && !providerModels.includes(llmModel) ? [llmModel, ...providerModels] : providerModels;
   const condition = String(node.config.condition ?? "");
   const query = String(node.config.query ?? "");
   const queryParams = Array.isArray(node.config.queryParams) ? node.config.queryParams : [];
   const queryParamsRaw = JSON.stringify(queryParams);
   const maxRows = String(node.config.maxRows ?? "100");
   const connectionString = String(node.config.connectionString ?? "");
+  const debateTopic = String(node.config.debateTopic ?? "");
+  const debateRounds = String(node.config.debateRounds ?? "1");
+  const participants = Array.isArray(node.config.participants) ? node.config.participants : [];
+  const participantsRaw = JSON.stringify(participants);
+  const nodeDescriptionSummary = getNodeDescriptionSummary(node, tools);
 
   return (
     <aside className="h-full space-y-3 rounded border border-slate-200 bg-white p-4 xl:overflow-auto">
@@ -80,9 +140,11 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
           onChange={(event) =>
             onUpdateNode(node.id, { config: { ...node.config, description: event.target.value } })
           }
+          placeholder={nodeDescriptionSummary}
           rows={3}
           value={description}
         />
+        <div className="mt-1 text-[11px] text-slate-500">Suggested summary: {nodeDescriptionSummary}</div>
       </label>
 
       {node.type === "llm" ? (
@@ -91,9 +153,20 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
             <div className="mb-1 text-slate-600">LLM Provider</div>
             <select
               className="w-full rounded border border-slate-300 px-2 py-1"
-              onChange={(event) =>
-                onUpdateNode(node.id, { config: { ...node.config, llmProvider: event.target.value } })
-              }
+              onChange={(event) => {
+                const nextProvider = event.target.value as LlmProvider | "";
+                if (!nextProvider) {
+                  onUpdateNode(node.id, { config: { ...node.config, llmProvider: "", llmModel: "" } });
+                  return;
+                }
+                onUpdateNode(node.id, {
+                  config: {
+                    ...node.config,
+                    llmProvider: nextProvider,
+                    llmModel: getDefaultModelForProvider(nextProvider)
+                  }
+                });
+              }}
               value={llmProvider}
             >
               <option value="">Select provider</option>
@@ -104,14 +177,23 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
           </label>
           <label className="text-xs">
             <div className="mb-1 text-slate-600">LLM Model</div>
-            <input
+            <select
               className="w-full rounded border border-slate-300 px-2 py-1"
               onChange={(event) =>
                 onUpdateNode(node.id, { config: { ...node.config, llmModel: event.target.value } })
               }
-              placeholder="e.g., gpt-4.1-mini"
+              disabled={!hasKnownProvider}
               value={llmModel}
-            />
+            >
+              {!hasKnownProvider ? (
+                <option value="">Select provider first</option>
+              ) : null}
+              {llmModelOptions.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
           </label>
         </div>
       ) : null}
@@ -209,6 +291,58 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
             value={condition}
           />
         </label>
+      ) : null}
+
+      {node.type === "debate" ? (
+        <div className="space-y-2">
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Debate Topic / Question</div>
+            <textarea
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, debateTopic: event.target.value } })
+              }
+              placeholder="Should we expedite order ORD-1001 given cost and risk?"
+              rows={3}
+              value={debateTopic}
+            />
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Debate Rounds</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              min={1}
+              onChange={(event) =>
+                onUpdateNode(node.id, {
+                  config: { ...node.config, debateRounds: Math.max(1, Number(event.target.value) || 1) }
+                })
+              }
+              type="number"
+              value={debateRounds}
+            />
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Participants JSON Array</div>
+            <textarea
+              className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-[11px]"
+              onChange={(event) => {
+                let next: unknown[] = [];
+                try {
+                  const parsed = JSON.parse(event.target.value) as unknown;
+                  if (Array.isArray(parsed)) {
+                    next = parsed;
+                  }
+                } catch {
+                  next = [];
+                }
+                onUpdateNode(node.id, { config: { ...node.config, participants: next } });
+              }}
+              placeholder='[{"provider":"openai","model":"gpt-4.1-mini"},{"provider":"anthropic","model":"claude-3-5-haiku-latest"}]'
+              rows={4}
+              value={participantsRaw}
+            />
+          </label>
+        </div>
       ) : null}
 
       <button

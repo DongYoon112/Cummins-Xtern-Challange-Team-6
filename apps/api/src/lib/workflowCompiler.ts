@@ -49,6 +49,9 @@ function inferAgentName(node: DraftNode) {
   if (node.type === "memory") {
     return "Inventory Agent";
   }
+  if (node.type === "debate") {
+    return "Debate Agent";
+  }
   if (node.type === "output") {
     return "Notification Agent";
   }

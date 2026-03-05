@@ -51,6 +51,7 @@ const NODE_TYPE_LABELS: Record<WorkflowNodeType, string> = {
   tool: "Tool",
   router: "Router",
   memory: "Memory",
+  debate: "Debate",
   output: "Output"
 };
 
@@ -63,15 +64,17 @@ function nodeColor(type: WorkflowNodeType) {
     case "start":
       return "border-emerald-400 bg-emerald-50";
     case "llm":
-      return "border-cyan-400 bg-cyan-50";
+      return "border-orange-400 bg-orange-50";
     case "tool":
       return "border-amber-400 bg-amber-50";
     case "router":
-      return "border-violet-400 bg-violet-50";
+      return "border-amber-400 bg-amber-50";
     case "memory":
-      return "border-sky-400 bg-sky-50";
+      return "border-orange-300 bg-orange-50";
+    case "debate":
+      return "border-amber-300 bg-amber-50";
     case "output":
-      return "border-teal-400 bg-teal-50";
+      return "border-orange-500 bg-orange-50";
     default:
       return "border-slate-300 bg-white";
   }
@@ -98,10 +101,28 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
   const viewportRef = useRef(viewport);
   const dragRef = useRef<DragState>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     viewportRef.current = viewport;
   }, [viewport]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const measure = () => {
+      const rect = canvas.getBoundingClientRect();
+      setCanvasSize({ width: rect.width, height: rect.height });
+    };
+
+    measure();
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
 
   const selectedNode = flow.nodes.find((node) => node.id === selectedNodeId) ?? null;
   const graphValidation = validateFlowGraph(config.graph ?? { nodes: [], edges: [] });
@@ -299,14 +320,76 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedEdgeId, selectedNodeId]);
 
-  function onWheel(event: React.WheelEvent) {
-    event.preventDefault();
-    const nextScale = Math.max(0.5, Math.min(1.8, viewportRef.current.scale + (event.deltaY < 0 ? 0.08 : -0.08)));
-    setViewport((current) => ({ ...current, scale: Number(nextScale.toFixed(2)) }));
-  }
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const onNativeWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const nextScale = Math.max(0.5, Math.min(1.8, viewportRef.current.scale + (event.deltaY < 0 ? 0.08 : -0.08)));
+      setViewport((current) => ({ ...current, scale: Number(nextScale.toFixed(2)) }));
+    };
+
+    canvas.addEventListener("wheel", onNativeWheel, { passive: false });
+    return () => {
+      canvas.removeEventListener("wheel", onNativeWheel);
+    };
+  }, []);
+
+  const minimap = useMemo(() => {
+    const mapWidth = 180;
+    const mapHeight = 110;
+    const nodes = flow.nodes;
+    if (nodes.length === 0) {
+      return {
+        mapWidth,
+        mapHeight,
+        scale: 1,
+        originX: 0,
+        originY: 0,
+        world: { minX: 0, minY: 0, width: 1, height: 1 },
+        viewportRect: { x: 0, y: 0, width: mapWidth, height: mapHeight }
+      };
+    }
+
+    const minX = Math.min(...nodes.map((node) => node.position.x)) - 80;
+    const minY = Math.min(...nodes.map((node) => node.position.y)) - 80;
+    const maxX = Math.max(...nodes.map((node) => node.position.x + NODE_SIZE.width)) + 80;
+    const maxY = Math.max(...nodes.map((node) => node.position.y + NODE_SIZE.height)) + 80;
+    const worldWidth = Math.max(1, maxX - minX);
+    const worldHeight = Math.max(1, maxY - minY);
+    const scale = Math.min(mapWidth / worldWidth, mapHeight / worldHeight);
+    const originX = (mapWidth - worldWidth * scale) / 2;
+    const originY = (mapHeight - worldHeight * scale) / 2;
+
+    const viewLeft = -viewport.x / viewport.scale;
+    const viewTop = -viewport.y / viewport.scale;
+    const viewWidth = canvasSize.width > 0 ? canvasSize.width / viewport.scale : worldWidth;
+    const viewHeight = canvasSize.height > 0 ? canvasSize.height / viewport.scale : worldHeight;
+
+    const viewportRect = {
+      x: originX + (viewLeft - minX) * scale,
+      y: originY + (viewTop - minY) * scale,
+      width: viewWidth * scale,
+      height: viewHeight * scale
+    };
+
+    return {
+      mapWidth,
+      mapHeight,
+      scale,
+      originX,
+      originY,
+      world: { minX, minY, width: worldWidth, height: worldHeight },
+      viewportRect
+    };
+  }, [canvasSize.height, canvasSize.width, flow.nodes, viewport.scale, viewport.x, viewport.y]);
 
   return (
-    <div className="grid grid-cols-1 gap-3 xl:h-[620px] xl:grid-cols-[1fr,320px]">
+    <div className="flowchart-original grid grid-cols-1 gap-3 xl:h-[620px] xl:grid-cols-[1fr,320px]">
       <section className="rounded border border-slate-200 bg-white p-3 xl:h-full">
         <div className="grid gap-3 md:grid-cols-[220px,1fr] xl:h-full">
           <aside className="rounded border border-slate-200 bg-slate-50 p-3">
@@ -317,7 +400,7 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
                 onChange={(event) => setNodeTypeToAdd(event.target.value as WorkflowNodeType)}
                 value={nodeTypeToAdd}
               >
-                {(["start", "llm", "tool", "router", "memory", "output"] as WorkflowNodeType[]).map((type) => (
+                {(["start", "llm", "tool", "router", "memory", "debate", "output"] as WorkflowNodeType[]).map((type) => (
                   <option key={type} value={type}>
                     {NODE_TYPE_LABELS[type]}
                   </option>
@@ -370,7 +453,6 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
               className="relative h-[530px] overflow-hidden rounded border border-slate-200 xl:h-full"
               onClick={() => setSelectedEdgeId(null)}
               onMouseDown={beginPan}
-              onWheel={onWheel}
               ref={canvasRef}
               style={{
                 backgroundImage:
@@ -524,6 +606,56 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
                     );
                   })}
                 </div>
+              </div>
+              <div className="pointer-events-none absolute bottom-2 left-2 rounded border border-slate-300 bg-white/90 p-1 shadow">
+                <svg height={minimap.mapHeight} width={minimap.mapWidth}>
+                  <rect
+                    fill="#f8fafc"
+                    height={minimap.mapHeight}
+                    rx={4}
+                    stroke="#cbd5e1"
+                    width={minimap.mapWidth}
+                    x={0}
+                    y={0}
+                  />
+                  {flow.edges.map((edge) => {
+                    const source = flow.nodes.find((node) => node.id === edge.source);
+                    const target = flow.nodes.find((node) => node.id === edge.target);
+                    if (!source || !target) {
+                      return null;
+                    }
+                    const x1 =
+                      minimap.originX +
+                      (source.position.x + NODE_SIZE.width / 2 - minimap.world.minX) * minimap.scale;
+                    const y1 =
+                      minimap.originY +
+                      (source.position.y + NODE_SIZE.height / 2 - minimap.world.minY) * minimap.scale;
+                    const x2 =
+                      minimap.originX +
+                      (target.position.x + NODE_SIZE.width / 2 - minimap.world.minX) * minimap.scale;
+                    const y2 =
+                      minimap.originY +
+                      (target.position.y + NODE_SIZE.height / 2 - minimap.world.minY) * minimap.scale;
+                    return <line key={edge.id} stroke="#94a3b8" strokeWidth={1} x1={x1} x2={x2} y1={y1} y2={y2} />;
+                  })}
+                  {flow.nodes.map((node) => {
+                    const x = minimap.originX + (node.position.x - minimap.world.minX) * minimap.scale;
+                    const y = minimap.originY + (node.position.y - minimap.world.minY) * minimap.scale;
+                    const w = Math.max(3, NODE_SIZE.width * minimap.scale);
+                    const h = Math.max(3, NODE_SIZE.height * minimap.scale);
+                    return <rect key={node.id} fill="#0f172a" height={h} opacity={0.85} rx={1} width={w} x={x} y={y} />;
+                  })}
+                  <rect
+                    fill="none"
+                    height={Math.min(minimap.mapHeight, Math.max(8, minimap.viewportRect.height))}
+                    rx={2}
+                    stroke="#f97316"
+                    strokeWidth={1.5}
+                    width={Math.min(minimap.mapWidth, Math.max(8, minimap.viewportRect.width))}
+                    x={Math.max(0, Math.min(minimap.mapWidth, minimap.viewportRect.x))}
+                    y={Math.max(0, Math.min(minimap.mapHeight, minimap.viewportRect.y))}
+                  />
+                </svg>
               </div>
             </div>
 

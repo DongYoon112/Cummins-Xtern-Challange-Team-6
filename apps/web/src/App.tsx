@@ -4,10 +4,13 @@ import { AppLayout } from "./components/AppLayout";
 import { LoginPage } from "./pages/LoginPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { RunsPage } from "./pages/RunsPage";
+import { OperationsPage } from "./pages/OperationsPage";
 import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { AuditLogPage } from "./pages/AuditLogPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { DocsPage } from "./pages/DocsPage";
+import { WarRoomPage } from "./pages/WarRoomPage";
+import { HomePage } from "./pages/HomePage";
 import type { Role } from "./lib/types";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -44,6 +47,7 @@ function Shell() {
     <RequireAuth>
       <AppLayout>
         <Routes>
+          <Route path="/home" element={<HomePage />} />
           <Route
             path="/workflows"
             element={
@@ -52,8 +56,10 @@ function Shell() {
               </RequireRole>
             }
           />
+          <Route path="/operations" element={<OperationsPage />} />
           <Route path="/run" element={<RunsPage />} />
           <Route path="/runs" element={<Navigate replace to="/run" />} />
+          <Route path="/war-room" element={<WarRoomPage />} />
           <Route path="/docs" element={<DocsPage />} />
           <Route
             path="/approvals"
@@ -79,7 +85,7 @@ function Shell() {
               </RequireRole>
             }
           />
-          <Route path="*" element={<Navigate replace to="/workflows" />} />
+          <Route path="*" element={<Navigate replace to="/home" />} />
         </Routes>
       </AppLayout>
     </RequireAuth>

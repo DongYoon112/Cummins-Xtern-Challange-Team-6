@@ -1,0 +1,109 @@
+{
+  "id": "wf_advanced_demo",
+  "name": "Advanced DB + Debate + Router + Memory + Output",
+  "description": "Demonstrates templating, debate, router branching, gated DB write, memory write/read, and summary output.",
+  "agentType": "Orchestrator",
+  "llmProvider": "openai",
+  "llmModel": "gpt-4.1-mini",
+  "tools": [],
+  "graph": {
+    "nodes": [
+      { "id": "start_1", "type": "start", "position": { "x": 80, "y": 200 }, "config": { "label": "Start" } },
+      {
+        "id": "tool_read",
+        "type": "tool",
+        "position": { "x": 300, "y": 200 },
+        "config": {
+          "label": "Read Low Inventory",
+          "toolId": "database",
+          "query": "SELECT sku, on_hand, reserved FROM inventory WHERE (on_hand - reserved) < 20 ORDER BY sku LIMIT 20",
+          "maxRows": 20
+        }
+      },
+      {
+        "id": "debate_1",
+        "type": "debate",
+        "position": { "x": 540, "y": 200 },
+        "config": {
+          "label": "Debate PO Plan",
+          "debateTopic": "Given low inventory rows in {{steps.tool_read.output.rows}}, should we create draft POs now?",
+          "debateRounds": 1
+        }
+      },
+      {
+        "id": "router_1",
+        "type": "router",
+        "position": { "x": 780, "y": 200 },
+        "config": {
+          "label": "Approval Router",
+          "requiresApproval": false,
+          "routes": [
+            {
+              "label": "Write Draft PO",
+              "condition": "steps.debate_1.output.finalRecommendation != \"\"",
+              "toNodeId": "llm_write"
+            }
+          ],
+          "defaultRouteToNodeId": "output_1"
+        }
+      },
+      {
+        "id": "llm_write",
+        "type": "llm",
+        "position": { "x": 1020, "y": 120 },
+        "config": {
+          "label": "LLM DB Write",
+          "llmProvider": "openai",
+          "llmModel": "gpt-4.1-mini",
+          "prompt": "Create one draft PO write decision from {{steps.tool_read.output.rows}} and explain why.",
+          "toolId": "database",
+          "allowDbWrite": true,
+          "stopOnReject": false,
+          "query": "INSERT INTO purchase_orders (id, team_id, workflow_id, vendor_id, part_id, qty, status, created_at, updated_at) VALUES ('po_{{runId}}', 'team-default', '{{workflowId}}', 'SUP-01', 'SKU-100', 25, 'DRAFT', '2026-03-05T00:00:00.000Z', '2026-03-05T00:00:00.000Z')"
+        }
+      },
+      {
+        "id": "memory_write",
+        "type": "memory",
+        "position": { "x": 1260, "y": 120 },
+        "config": {
+          "label": "Memory Write",
+          "mode": "write",
+          "key": "lastPoDecision",
+          "value": "{{steps.llm_write.output.answer}}"
+        }
+      },
+      {
+        "id": "memory_read",
+        "type": "memory",
+        "position": { "x": 1500, "y": 120 },
+        "config": {
+          "label": "Memory Read",
+          "mode": "read",
+          "key": "lastPoDecision",
+          "assignTo": "variables.lastPoDecision"
+        }
+      },
+      {
+        "id": "output_1",
+        "type": "output",
+        "position": { "x": 1260, "y": 300 },
+        "config": {
+          "label": "Summary Output",
+          "outputMode": "run_summary",
+          "includeContext": true,
+          "messageTemplate": "# Workflow Summary\n\n- Debate: {{steps.debate_1.output.finalRecommendation}}\n- Last PO decision: {{variables.lastPoDecision}}\n- Last output: {{lastOutput}}"
+        }
+      }
+    ],
+    "edges": [
+      { "id": "e1", "source": "start_1", "target": "tool_read" },
+      { "id": "e2", "source": "tool_read", "target": "debate_1" },
+      { "id": "e3", "source": "debate_1", "target": "router_1" },
+      { "id": "e4", "source": "router_1", "target": "llm_write" },
+      { "id": "e5", "source": "llm_write", "target": "memory_write" },
+      { "id": "e6", "source": "memory_write", "target": "memory_read" },
+      { "id": "e7", "source": "memory_read", "target": "output_1" }
+    ]
+  }
+}

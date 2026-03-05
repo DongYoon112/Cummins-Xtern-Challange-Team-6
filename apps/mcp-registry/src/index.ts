@@ -62,17 +62,14 @@ function initDb() {
 }
 
 function seedAgents() {
-  const existing = db.prepare("SELECT COUNT(*) AS count FROM agent_catalog").get() as {
-    count: number;
-  };
-
-  if (existing.count > 0) {
-    return;
-  }
-
   const insert = db.prepare(`
     INSERT INTO agent_catalog (name, type, description, allowlist_json, default_params_json)
     VALUES (@name, @type, @description, @allowlist, @defaultParams)
+    ON CONFLICT(name) DO UPDATE SET
+      type = excluded.type,
+      description = excluded.description,
+      allowlist_json = excluded.allowlist_json,
+      default_params_json = excluded.default_params_json
   `);
 
   const tx = db.transaction(() => {

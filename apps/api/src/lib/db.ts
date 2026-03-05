@@ -133,6 +133,28 @@ export function initApiDb() {
       rate_usd REAL NOT NULL,
       lead_days INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS purchase_orders (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      run_id TEXT,
+      workflow_id TEXT,
+      vendor_id TEXT NOT NULL,
+      part_id TEXT NOT NULL,
+      qty INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      draft_payload_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS mock_vendor_orders (
+      id TEXT PRIMARY KEY,
+      po_id TEXT NOT NULL,
+      vendor_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   const now = new Date().toISOString();

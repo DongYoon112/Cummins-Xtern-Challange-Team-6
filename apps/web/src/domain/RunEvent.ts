@@ -1,4 +1,5 @@
 export type RunEvent = {
+  id?: number;
   runId: string;
   ts: string;
   kind:
@@ -10,7 +11,11 @@ export type RunEvent = {
     | "recommendation"
     | "decision"
     | "action"
-    | "error";
+    | "error"
+    | "AGENT_ALERT"
+    | "DEBATE_RESULT"
+    | "ROUTER_DECISION_REQUIRED"
+    | "WORKFLOW_STATUS_UPDATE";
   stepId?: string;
   title: string;
   data: any;

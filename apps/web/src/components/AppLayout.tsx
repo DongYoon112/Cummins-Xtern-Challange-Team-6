@@ -48,6 +48,12 @@ const tabs: TabConfig[] = [
     roles: ["BUILDER", "OPERATOR", "APPROVER", "AUDITOR", "ADMIN"]
   },
   {
+    to: "/procurement",
+    label: "Procurement",
+    summary: "Run procurement scan, manage PO approvals, submit to vendor, and advance fulfillment status.",
+    roles: ["BUILDER", "OPERATOR", "APPROVER", "ADMIN"]
+  },
+  {
     to: "/run",
     label: "Run",
     summary: "Start workflow runs and inspect step-by-step execution output.",

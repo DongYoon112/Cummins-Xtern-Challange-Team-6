@@ -10,7 +10,7 @@ export type User = {
 export type WorkflowStep = {
   id: string;
   name: string;
-  kind: "AGENT" | "APPROVAL";
+  kind: "AGENT" | "APPROVAL" | "ROUTER";
   agentName?: string;
   params: Record<string, unknown>;
 };
@@ -28,7 +28,7 @@ export type WorkflowSummary = {
 export type RunStep = {
   stepId: string;
   name: string;
-  kind: "AGENT" | "APPROVAL";
+  kind: "AGENT" | "APPROVAL" | "ROUTER";
   agentName?: string;
   status: "PENDING" | "RUNNING" | "WAITING_APPROVAL" | "COMPLETED" | "REJECTED" | "FAILED";
   params: Record<string, unknown>;

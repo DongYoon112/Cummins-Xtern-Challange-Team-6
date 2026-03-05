@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { config as loadEnv } from "dotenv";
 
 import bcrypt from "bcryptjs";
@@ -18,6 +19,7 @@ import { compileWorkflowDraft } from "./lib/workflowCompiler";
 import { DraftGenerateInputSchema, generateWorkflowDraft } from "./lib/draftGenerator";
 import { executeReadOnlyExternalQuery } from "./lib/externalDb";
 import { runsRouter } from "./routes/runs";
+import { warRoomRouter } from "./routes/warRoom";
 
 loadEnv();
 loadEnv({ path: path.resolve(fileURLToPath(new URL("../../../.env", import.meta.url))) });
@@ -79,6 +81,7 @@ app.get("/auth/me", authRequired, (req, res) => {
 
 app.use(authRequired);
 app.use("/api/runs", runsRouter);
+app.use("/api/war-room", warRoomRouter);
 
 app.get("/agents", async (req, res) => {
   try {
@@ -342,7 +345,7 @@ const workflowSaveSchema = z.object({
     z.object({
       id: z.string().min(1),
       name: z.string().min(1),
-      kind: z.enum(["AGENT", "APPROVAL"]),
+      kind: z.enum(["AGENT", "APPROVAL", "ROUTER"]),
       agentName: z.string().optional(),
       params: z.record(z.any()).default({})
     })
@@ -780,6 +783,340 @@ app.get("/optimization/proposals", async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Failed to list optimization proposals" });
+  }
+});
+
+const procurementScanSchema = z.object({
+  threshold: z.number().int().positive().optional(),
+  targetQty: z.number().int().positive().optional()
+});
+
+app.get("/procurement/po", async (req, res) => {
+  try {
+    const rows = db
+      .prepare(
+        `
+        SELECT id, team_id, run_id, workflow_id, vendor_id, part_id, qty, status, draft_payload_json, created_at, updated_at
+        FROM purchase_orders
+        WHERE team_id = ?
+        ORDER BY updated_at DESC
+        `
+      )
+      .all(req.user!.teamId) as Array<{
+      id: string;
+      team_id: string;
+      run_id: string | null;
+      workflow_id: string | null;
+      vendor_id: string;
+      part_id: string;
+      qty: number;
+      status: string;
+      draft_payload_json: string | null;
+      created_at: string;
+      updated_at: string;
+    }>;
+    res.json({
+      purchaseOrders: rows.map((row) => ({
+        id: row.id,
+        teamId: row.team_id,
+        runId: row.run_id,
+        workflowId: row.workflow_id,
+        vendorId: row.vendor_id,
+        partId: row.part_id,
+        qty: row.qty,
+        status: row.status,
+        draftPayload: row.draft_payload_json ? JSON.parse(row.draft_payload_json) : null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }))
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to list purchase orders" });
+  }
+});
+
+app.post("/procurement/scan", requireRoles("OPERATOR", "BUILDER"), async (req, res) => {
+  const parsed = procurementScanSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid procurement scan payload", details: parsed.error.flatten() });
+    return;
+  }
+  try {
+    let runId: string | null = null;
+    try {
+      const workflowsPayload = await callMcpTool<{ teamId: string }, { workflows: Array<{ workflowId: string; name: string }> }>(
+        "registry",
+        "list_workflows",
+        { teamId: req.user!.teamId }
+      );
+      const procurementWorkflow = (workflowsPayload.workflows ?? []).find((workflow) => workflow.name === "Procurement Scan");
+      if (procurementWorkflow?.workflowId) {
+        const run = await orchestrator.startRun({
+          actor: {
+            userId: req.user!.id,
+            username: req.user!.username,
+            teamId: req.user!.teamId
+          },
+          workflowId: procurementWorkflow.workflowId
+        });
+        runId = run.runId;
+      }
+    } catch {
+      runId = null;
+    }
+
+    const threshold = parsed.data.threshold ?? 20;
+    const targetQty = parsed.data.targetQty ?? 100;
+    const rows = db
+      .prepare("SELECT sku, on_hand, reserved FROM inventory WHERE (on_hand - reserved) < ? ORDER BY sku")
+      .all(threshold) as Array<{ sku: string; on_hand: number; reserved: number }>;
+
+    const now = new Date().toISOString();
+    const created: Array<Record<string, unknown>> = [];
+    const tx = db.transaction(() => {
+      for (const row of rows) {
+        const available = Math.max(0, row.on_hand - row.reserved);
+        const qty = Math.max(1, targetQty - available);
+        const poId = `po_${randomUUID()}`;
+        const vendorId = available < threshold / 2 ? "SUP-01" : "SUP-03";
+        const payload = {
+          reason: "Inventory below threshold",
+          available,
+          threshold,
+          suggestedVendor: vendorId
+        };
+        db.prepare(
+          `
+          INSERT INTO purchase_orders (id, team_id, run_id, workflow_id, vendor_id, part_id, qty, status, draft_payload_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `
+        ).run(
+          poId,
+          req.user!.teamId,
+          runId,
+          "wf_procurement_scan",
+          vendorId,
+          row.sku,
+          qty,
+          "DRAFT",
+          JSON.stringify(payload),
+          now,
+          now
+        );
+        created.push({
+          id: poId,
+          vendorId,
+          partId: row.sku,
+          qty,
+          status: "DRAFT",
+          draftPayload: payload
+        });
+      }
+    });
+    tx();
+
+    res.status(201).json({
+      workflowId: "wf_procurement_scan",
+      runId,
+      createdDraftPos: created
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed procurement scan" });
+  }
+});
+
+app.post("/procurement/po/:id/request-approval", requireRoles("OPERATOR", "BUILDER"), async (req, res) => {
+  const poId = String(req.params.id ?? "").trim();
+  if (!poId) {
+    res.status(400).json({ error: "Missing PO id" });
+    return;
+  }
+  try {
+    const po = db
+      .prepare("SELECT * FROM purchase_orders WHERE id = ? AND team_id = ? LIMIT 1")
+      .get(poId, req.user!.teamId) as
+      | {
+          id: string;
+          workflow_id: string | null;
+          part_id: string;
+          vendor_id: string;
+          qty: number;
+          status: string;
+        }
+      | undefined;
+    if (!po) {
+      res.status(404).json({ error: "PO not found" });
+      return;
+    }
+    const now = new Date().toISOString();
+    const approvalId = `apr_${randomUUID()}`;
+    db.prepare(
+      `
+      INSERT INTO approvals (id, team_id, run_id, workflow_id, step_id, step_name, kind, status, context_json, requested_by, requested_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    ).run(
+      approvalId,
+      req.user!.teamId,
+      `proc_${poId}`,
+      po.workflow_id ?? "wf_procurement_scan",
+      poId,
+      "Procurement PO Approval",
+      "PROCUREMENT_PO",
+      "PENDING",
+      JSON.stringify({ poId, partId: po.part_id, vendorId: po.vendor_id, qty: po.qty }),
+      req.user!.id,
+      now
+    );
+    db.prepare("UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ?").run("PENDING_APPROVAL", now, poId);
+    res.json({ approvalId, poId, status: "PENDING_APPROVAL" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to request PO approval" });
+  }
+});
+
+const poDecisionSchema = z.object({
+  comment: z.string().optional()
+});
+
+app.post("/procurement/po/:id/approve", requireRoles("APPROVER", "ADMIN"), async (req, res) => {
+  const parsed = poDecisionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid approval payload", details: parsed.error.flatten() });
+    return;
+  }
+  const poId = String(req.params.id ?? "").trim();
+  try {
+    const now = new Date().toISOString();
+    const approval = db
+      .prepare("SELECT * FROM approvals WHERE step_id = ? AND team_id = ? AND status = 'PENDING' ORDER BY requested_at DESC LIMIT 1")
+      .get(poId, req.user!.teamId) as { id: string } | undefined;
+    if (!approval) {
+      res.status(404).json({ error: "Pending approval not found for PO" });
+      return;
+    }
+    db.prepare("UPDATE approvals SET status = 'APPROVED', decided_by = ?, decided_at = ?, decision_comment = ? WHERE id = ?").run(
+      req.user!.id,
+      now,
+      parsed.data.comment ?? null,
+      approval.id
+    );
+    db.prepare("UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ? AND team_id = ?").run(
+      "APPROVED",
+      now,
+      poId,
+      req.user!.teamId
+    );
+    res.json({ poId, status: "APPROVED" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to approve PO" });
+  }
+});
+
+app.post("/procurement/po/:id/reject", requireRoles("APPROVER", "ADMIN"), async (req, res) => {
+  const parsed = poDecisionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid reject payload", details: parsed.error.flatten() });
+    return;
+  }
+  const poId = String(req.params.id ?? "").trim();
+  try {
+    const now = new Date().toISOString();
+    const approval = db
+      .prepare("SELECT * FROM approvals WHERE step_id = ? AND team_id = ? AND status = 'PENDING' ORDER BY requested_at DESC LIMIT 1")
+      .get(poId, req.user!.teamId) as { id: string } | undefined;
+    if (!approval) {
+      res.status(404).json({ error: "Pending approval not found for PO" });
+      return;
+    }
+    db.prepare("UPDATE approvals SET status = 'REJECTED', decided_by = ?, decided_at = ?, decision_comment = ? WHERE id = ?").run(
+      req.user!.id,
+      now,
+      parsed.data.comment ?? null,
+      approval.id
+    );
+    db.prepare("UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ? AND team_id = ?").run(
+      "REJECTED",
+      now,
+      poId,
+      req.user!.teamId
+    );
+    res.json({ poId, status: "REJECTED" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to reject PO" });
+  }
+});
+
+app.post("/procurement/po/:id/submit-to-vendor", requireRoles("OPERATOR", "BUILDER"), async (req, res) => {
+  const poId = String(req.params.id ?? "").trim();
+  try {
+    const po = db
+      .prepare("SELECT * FROM purchase_orders WHERE id = ? AND team_id = ? LIMIT 1")
+      .get(poId, req.user!.teamId) as
+      | {
+          id: string;
+          vendor_id: string;
+          part_id: string;
+          qty: number;
+          status: string;
+        }
+      | undefined;
+    if (!po) {
+      res.status(404).json({ error: "PO not found" });
+      return;
+    }
+    if (po.status !== "APPROVED") {
+      res.status(400).json({ error: "PO must be APPROVED before vendor submission" });
+      return;
+    }
+    const now = new Date().toISOString();
+    const vendorOrderId = `vo_${randomUUID()}`;
+    db.prepare("INSERT INTO mock_vendor_orders (id, po_id, vendor_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?)").run(
+      vendorOrderId,
+      poId,
+      po.vendor_id,
+      JSON.stringify({ poId, vendorId: po.vendor_id, partId: po.part_id, qty: po.qty }),
+      now
+    );
+    db.prepare("UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ?").run("CONFIRMED", now, poId);
+    res.json({ poId, vendorOrderId, status: "CONFIRMED" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to submit PO to vendor" });
+  }
+});
+
+app.post("/procurement/po/:id/advance-status", requireRoles("OPERATOR", "BUILDER"), async (req, res) => {
+  const poId = String(req.params.id ?? "").trim();
+  try {
+    const po = db
+      .prepare("SELECT id, status FROM purchase_orders WHERE id = ? AND team_id = ? LIMIT 1")
+      .get(poId, req.user!.teamId) as { id: string; status: string } | undefined;
+    if (!po) {
+      res.status(404).json({ error: "PO not found" });
+      return;
+    }
+
+    const transitions: Record<string, string> = {
+      CONFIRMED: "SHIPPED",
+      SHIPPED: "RECEIVED",
+      RECEIVED: "CLOSED"
+    };
+    const next = transitions[po.status];
+    if (!next) {
+      res.status(400).json({ error: `Cannot advance status from ${po.status}` });
+      return;
+    }
+    db.prepare("UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ?").run(next, new Date().toISOString(), poId);
+    res.json({ poId, status: next });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to advance PO status" });
   }
 });
 

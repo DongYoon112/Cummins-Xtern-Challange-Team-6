@@ -11,6 +11,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { DocsPage } from "./pages/DocsPage";
 import { WarRoomPage } from "./pages/WarRoomPage";
 import { HomePage } from "./pages/HomePage";
+import { ProcurementPage } from "./pages/ProcurementPage";
 import type { Role } from "./lib/types";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -57,6 +58,7 @@ function Shell() {
             }
           />
           <Route path="/operations" element={<OperationsPage />} />
+          <Route path="/procurement" element={<ProcurementPage />} />
           <Route path="/run" element={<RunsPage />} />
           <Route path="/runs" element={<Navigate replace to="/run" />} />
           <Route path="/war-room" element={<WarRoomPage />} />

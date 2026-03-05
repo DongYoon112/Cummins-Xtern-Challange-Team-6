@@ -32,7 +32,7 @@ type WorkflowVersionDetails = {
   steps?: Array<{
     id?: string;
     name?: string;
-    kind?: "AGENT" | "APPROVAL";
+    kind?: "AGENT" | "APPROVAL" | "ROUTER";
     agentName?: string;
     params?: Record<string, unknown>;
   }>;
@@ -131,7 +131,9 @@ function normalizeWorkflowVersionDetails(input: unknown): WorkflowVersionDetails
   const steps = rawSteps.map((step) => {
     const record = typeof step === "object" && step !== null ? (step as Record<string, unknown>) : {};
     const kind =
-      record.kind === "AGENT" || record.kind === "APPROVAL" ? (record.kind as "AGENT" | "APPROVAL") : undefined;
+      record.kind === "AGENT" || record.kind === "APPROVAL" || record.kind === "ROUTER"
+        ? (record.kind as "AGENT" | "APPROVAL" | "ROUTER")
+        : undefined;
     return {
       id: typeof record.id === "string" ? record.id : undefined,
       name: typeof record.name === "string" ? record.name : undefined,
@@ -181,6 +183,8 @@ function buildGraphFromPublishedSteps(
     const nodeType: WorkflowNodeType =
       step.kind === "APPROVAL"
         ? "router"
+        : step.kind === "ROUTER"
+          ? "router"
         : agent.includes("debate")
           ? "debate"
           : agent.includes("logistics") || typeof step.params?.toolId === "string"
@@ -581,12 +585,15 @@ export function WorkflowsPage() {
     setError(null);
 
     try {
+      const workflowId = publishedWorkflowId ?? activeRepoId ?? draftOverride?.id;
       const payload = await apiFetch<{ runId: string }>(
-        "/api/runs",
+        "/api/war-room/start",
         {
           method: "POST",
           body: JSON.stringify({
-            draftWorkflow: draftOverride ?? config
+            workflowId: workflowId || undefined,
+            workflowVersion: publishedVersion ?? undefined,
+            templateName: "war-room-response"
           })
         },
         token ?? undefined

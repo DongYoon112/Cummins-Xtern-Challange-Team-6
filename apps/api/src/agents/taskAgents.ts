@@ -1,7 +1,7 @@
 import { askProviderForJson } from "../lib/providers";
 import type { ServerTeamSettings } from "../lib/settings";
 import { db } from "../lib/db";
-import { executeReadOnlyExternalQuery } from "../lib/externalDb";
+import { executeExternalQuery, executeReadOnlyExternalQuery } from "../lib/externalDb";
 import { DEFAULT_MODELS, type Provider } from "@agentfoundry/shared";
 
 type TaskResult = {
@@ -30,6 +30,27 @@ function toNumber(value: unknown, fallback: number): number {
 
 function clamp(value: number) {
   return Math.max(0, Math.min(1, value));
+}
+
+function isProvider(value: unknown): value is Provider {
+  return value === "openai" || value === "anthropic" || value === "gemini";
+}
+
+function renderPromptTemplate(template: string, runContext: Record<string, unknown>) {
+  return template.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (_match, key) => {
+    const raw = runContext[key];
+    if (raw === null || raw === undefined) {
+      return "";
+    }
+    if (typeof raw === "object") {
+      try {
+        return JSON.stringify(raw);
+      } catch {
+        return "";
+      }
+    }
+    return String(raw);
+  });
 }
 
 async function maybeRefineWithLlm(
@@ -83,6 +104,160 @@ export async function runTaskAgent(params: {
 }): Promise<TaskResult> {
   const { agentName, stepParams, runContext, teamSettings } = params;
   const toolCalls: TaskResult["toolCalls"] = [];
+
+  if (agentName === "LLM Agent") {
+    const databaseMode =
+      stepParams.toolId === "database" ||
+      stepParams.toolHint === "database" ||
+      stepParams.mode === "external_db_query" ||
+      stepParams.mode === "external_db_write" ||
+      typeof stepParams.query === "string";
+    const llmQuery = typeof stepParams.query === "string" ? stepParams.query : "";
+    const llmAllowDbWrite = stepParams.allowDbWrite === true || stepParams.mode === "external_db_write";
+    let dbOutput: Record<string, unknown> | undefined;
+    if (databaseMode && llmQuery.trim()) {
+      const connectionString =
+        String(
+          stepParams.connectionString ??
+            runContext.databaseConnectionString ??
+            teamSettings.externalDbUrl ??
+            process.env.EXTERNAL_DB_URL ??
+            ""
+        );
+      if (!connectionString) {
+        return {
+          output: {
+            error: "Database connection string missing.",
+            hint: "Set LLM node connectionString, settings external DB URL, or EXTERNAL_DB_URL."
+          },
+          confidence: 0.2,
+          rationale: "LLM Agent requested DB access but no connection string is configured.",
+          toolCalls,
+          mockMode: true
+        };
+      }
+      const queryParams = Array.isArray(stepParams.queryParams) ? stepParams.queryParams : [];
+      const maxRows = typeof stepParams.maxRows === "number" ? stepParams.maxRows : 100;
+      const query = renderPromptTemplate(llmQuery, runContext);
+      const result = llmAllowDbWrite
+        ? await executeExternalQuery({
+            connectionString,
+            query,
+            params: queryParams,
+            maxRows,
+            allowWrite: true
+          })
+        : await executeReadOnlyExternalQuery({
+            connectionString,
+            query,
+            params: queryParams,
+            maxRows
+          });
+      dbOutput = {
+        engine: result.engine,
+        rowCount: result.rowCount,
+        rows: result.rows,
+        writeEnabled: llmAllowDbWrite
+      };
+      toolCalls.push({
+        server: "external-db",
+        tool: llmAllowDbWrite ? "execute_query" : "read_only_query",
+        args: {
+          engine: result.engine,
+          maxRows,
+          query: query.slice(0, 300),
+          writeEnabled: llmAllowDbWrite
+        }
+      });
+    }
+
+    const requestedProvider = stepParams.llmProvider;
+    const provider = isProvider(requestedProvider) ? requestedProvider : teamSettings.defaultProvider;
+    const model =
+      typeof stepParams.llmModel === "string" && stepParams.llmModel.trim()
+        ? stepParams.llmModel.trim()
+        : provider === teamSettings.defaultProvider
+          ? teamSettings.defaultModel
+          : DEFAULT_MODELS[provider];
+    const apiKey = teamSettings.keys[provider];
+
+    const rawPrompt =
+      typeof stepParams.prompt === "string" && stepParams.prompt.trim()
+        ? stepParams.prompt
+        : typeof stepParams.question === "string" && stepParams.question.trim()
+          ? stepParams.question
+          : "Summarize the run context and provide the most important next action.";
+    const prompt = renderPromptTemplate(rawPrompt, runContext);
+    const systemPrompt =
+      typeof stepParams.systemPrompt === "string" && stepParams.systemPrompt.trim()
+        ? stepParams.systemPrompt.trim()
+        : "You are a precise operations assistant. Keep responses concise.";
+
+    if (!apiKey) {
+      return {
+        output: {
+          provider,
+          model,
+          prompt,
+          answer: `Mock response: ${prompt}`,
+          mockMode: true
+        },
+        confidence: 0.45,
+        rationale: `No ${provider} API key configured. Returned mock LLM output.`,
+        toolCalls,
+        mockMode: true
+      };
+    }
+
+    const envelope = await askProviderForJson({
+      provider,
+      model,
+      apiKey,
+      prompt: `${systemPrompt}\n\nUser prompt:\n${prompt}\n\nContext:\n${JSON.stringify(runContext).slice(0, 2000)}${
+        dbOutput ? `\n\nDatabase result:\n${JSON.stringify(dbOutput).slice(0, 2000)}` : ""
+      }`
+    });
+
+    toolCalls.push({
+      server: provider,
+      tool: "chat.completions",
+      args: {
+        model
+      }
+    });
+
+    if (!envelope) {
+      return {
+        output: {
+          provider,
+          model,
+          prompt,
+          database: dbOutput ?? null,
+          answer: "Provider call failed. No response envelope returned.",
+          mockMode: false
+        },
+        confidence: 0.3,
+        rationale: "Provider call failed for LLM Agent step.",
+        toolCalls,
+        mockMode: false
+      };
+    }
+
+    return {
+      output: {
+        provider,
+        model,
+        prompt,
+        database: dbOutput ?? null,
+        answer: envelope.summary,
+        mockMode: false
+      },
+      confidence: clamp(envelope.confidence),
+      rationale: envelope.rationale,
+      toolCalls,
+      mockMode: false
+    };
+  }
 
   const databaseMode =
     stepParams.toolId === "database" ||
@@ -539,17 +714,105 @@ export async function runTaskAgent(params: {
   }
 
   if (agentName === "Notification Agent") {
+    const mode = String(stepParams.outputMode ?? "run_summary");
     const summary = String(runContext.lastSummary ?? "Workflow completed");
     const destination = String(runContext.destination ?? "Operations Team");
+    const messageTemplate =
+      typeof stepParams.messageTemplate === "string" && stepParams.messageTemplate.trim()
+        ? stepParams.messageTemplate
+        : `# Run Summary\n\n- Destination: ${destination}\n- Summary: ${summary}`;
+    const includeContext = stepParams.includeContext === true;
+    const contextPayload = includeContext ? runContext : undefined;
+
+    if (mode === "webhook") {
+      const webhookUrl = String(stepParams.webhookUrl ?? "").trim();
+      if (!webhookUrl) {
+        return {
+          output: {
+            outputMode: "webhook",
+            error: "Missing webhookUrl."
+          },
+          confidence: 0.2,
+          rationale: "Webhook output mode selected but webhook URL is missing.",
+          toolCalls,
+          mockMode: true
+        };
+      }
+
+      const payload = {
+        message: messageTemplate,
+        summary,
+        destination,
+        context: contextPayload ?? null
+      };
+
+      let statusCode = 0;
+      let responseText = "";
+      try {
+        const response = await fetch(webhookUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+        statusCode = response.status;
+        responseText = await response.text();
+      } catch (error) {
+        return {
+          output: {
+            outputMode: "webhook",
+            webhookUrl,
+            sent: false,
+            error: error instanceof Error ? error.message : "Webhook request failed."
+          },
+          confidence: 0.25,
+          rationale: "Webhook request failed.",
+          toolCalls: [
+            ...toolCalls,
+            {
+              server: "webhook",
+              tool: "post",
+              args: { webhookUrl }
+            }
+          ],
+          mockMode: false
+        };
+      }
+
+      return {
+        output: {
+          outputMode: "webhook",
+          webhookUrl,
+          sent: statusCode >= 200 && statusCode < 300,
+          statusCode,
+          responseText: responseText.slice(0, 2000)
+        },
+        confidence: statusCode >= 200 && statusCode < 300 ? 0.92 : 0.45,
+        rationale: `Webhook POST completed with status ${statusCode}.`,
+        toolCalls: [
+          ...toolCalls,
+          {
+            server: "webhook",
+            tool: "post",
+            args: { webhookUrl, statusCode }
+          }
+        ],
+        mockMode: false
+      };
+    }
 
     const draftOutput = {
-      channel: String(stepParams.channel ?? "email"),
+      outputMode: "run_summary",
+      artifactType: "markdown",
+      markdown: messageTemplate,
+      summary,
       recipientGroup: destination,
-      message: `Action summary: ${summary}. Review run details in Orange Lantern.`
+      context: contextPayload ?? null
     };
 
     const baseConfidence = 0.93;
-    const baseRationale = "Notification message template generated from run context.";
+    const baseRationale = "Run summary artifact generated from run context.";
 
     const refined = await maybeRefineWithLlm(
       teamSettings,

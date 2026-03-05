@@ -176,8 +176,28 @@ export function createDefaultWorkflowConfig(): WorkflowConfig {
     graph: {
       nodes: [
         { id: startId, type: "start", position: { x: 100, y: 150 }, config: { label: "Start" } },
-        { id: llmId, type: "llm", position: { x: 330, y: 150 }, config: { label: "Model" } },
-        { id: outputId, type: "output", position: { x: 560, y: 150 }, config: { label: "Output" } }
+        {
+          id: llmId,
+          type: "llm",
+          position: { x: 330, y: 150 },
+          config: {
+            label: "Model",
+            llmProvider: "openai",
+            llmModel: "gpt-4.1-mini",
+            prompt: "What are the top 3 operational risks today for order {{orderId}}?"
+          }
+        },
+        {
+          id: outputId,
+          type: "output",
+          position: { x: 560, y: 150 },
+          config: {
+            label: "Output",
+            outputMode: "run_summary",
+            messageTemplate: "# Run Summary\n\n{{lastOutput}}",
+            includeContext: false
+          }
+        }
       ],
       edges: [
         { id: generateId("edge"), source: startId, target: llmId },

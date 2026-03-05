@@ -94,11 +94,23 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
   const linkedToolId = String(node.config.toolId ?? "");
   const llmProvider = String(node.config.llmProvider ?? "");
   const llmModel = String(node.config.llmModel ?? "");
+  const llmPrompt = String(node.config.prompt ?? "");
+  const llmSystemPrompt = String(node.config.systemPrompt ?? "");
+  const llmQuery = String(node.config.query ?? "");
+  const llmAllowDbWrite = node.config.allowDbWrite === true;
+  const llmQueryParams = Array.isArray(node.config.queryParams) ? node.config.queryParams : [];
+  const llmQueryParamsRaw = JSON.stringify(llmQueryParams);
+  const llmMaxRows = String(node.config.maxRows ?? "100");
+  const llmConnectionString = String(node.config.connectionString ?? "");
   const hasKnownProvider = llmProvider === "openai" || llmProvider === "anthropic" || llmProvider === "gemini";
   const providerModels = hasKnownProvider ? LLM_MODEL_OPTIONS[llmProvider as LlmProvider] : [];
   const llmModelOptions =
     llmModel && !providerModels.includes(llmModel) ? [llmModel, ...providerModels] : providerModels;
   const condition = String(node.config.condition ?? "");
+  const routes = Array.isArray(node.config.routes) ? node.config.routes : [];
+  const routesRaw = JSON.stringify(routes);
+  const defaultRouteToNodeId = String(node.config.defaultRouteToNodeId ?? "");
+  const requiresApproval = node.config.requiresApproval === true;
   const query = String(node.config.query ?? "");
   const queryParams = Array.isArray(node.config.queryParams) ? node.config.queryParams : [];
   const queryParamsRaw = JSON.stringify(queryParams);
@@ -108,6 +120,15 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
   const debateRounds = String(node.config.debateRounds ?? "1");
   const participants = Array.isArray(node.config.participants) ? node.config.participants : [];
   const participantsRaw = JSON.stringify(participants);
+  const memoryMode = String(node.config.mode ?? "write");
+  const memoryKey = String(node.config.key ?? "");
+  const memoryValueRaw =
+    typeof node.config.value === "string" ? node.config.value : JSON.stringify(node.config.value ?? {});
+  const memoryAssignTo = String(node.config.assignTo ?? "variables.memory");
+  const outputMode = String(node.config.outputMode ?? "run_summary");
+  const messageTemplate = String(node.config.messageTemplate ?? "");
+  const webhookUrl = String(node.config.webhookUrl ?? "");
+  const includeContext = node.config.includeContext === true;
   const nodeDescriptionSummary = getNodeDescriptionSummary(node, tools);
 
   return (
@@ -195,6 +216,106 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
               ))}
             </select>
           </label>
+          <label className="text-xs">
+            <div className="mb-1 text-slate-600">Prompt</div>
+            <textarea
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, prompt: event.target.value } })
+              }
+              placeholder="Ask your question here. Example: Summarize risks for ORD-1001."
+              rows={4}
+              value={llmPrompt}
+            />
+          </label>
+          <label className="text-xs">
+            <div className="mb-1 text-slate-600">System Prompt (optional)</div>
+            <textarea
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, systemPrompt: event.target.value } })
+              }
+              placeholder="You are a supply-chain assistant. Return concise JSON."
+              rows={3}
+              value={llmSystemPrompt}
+            />
+            <div className="mt-1 text-[11px] text-slate-500">
+              You can use context placeholders like {"{{orderId}}"} and {"{{lastSummary}}"}.
+            </div>
+          </label>
+          <label className="text-xs">
+            <div className="mb-1 text-slate-600">DB SQL (optional)</div>
+            <textarea
+              className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-[11px]"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, toolId: "database", query: event.target.value } })
+              }
+              placeholder="SELECT * FROM orders LIMIT 5"
+              rows={4}
+              value={llmQuery}
+            />
+          </label>
+          <label className="text-xs">
+            <div className="mb-1 text-slate-600">DB Query Params JSON Array</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-[11px]"
+              onChange={(event) => {
+                let parsed: unknown[] = [];
+                try {
+                  const next = JSON.parse(event.target.value) as unknown;
+                  if (Array.isArray(next)) {
+                    parsed = next;
+                  }
+                } catch {
+                  parsed = [];
+                }
+                onUpdateNode(node.id, { config: { ...node.config, queryParams: parsed } });
+              }}
+              placeholder='["ORD-1001"]'
+              value={llmQueryParamsRaw}
+            />
+          </label>
+          <label className="text-xs">
+            <div className="mb-1 text-slate-600">DB Max Rows (for SELECT)</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, {
+                  config: { ...node.config, maxRows: Number(event.target.value) || 100 }
+                })
+              }
+              type="number"
+              value={llmMaxRows}
+            />
+          </label>
+          <label className="text-xs">
+            <div className="mb-1 text-slate-600">DB Connection String Override (optional)</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, connectionString: event.target.value } })
+              }
+              placeholder="postgresql://user:pass@host:5432/db"
+              value={llmConnectionString}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              checked={llmAllowDbWrite}
+              onChange={(event) =>
+                onUpdateNode(node.id, {
+                  config: {
+                    ...node.config,
+                    allowDbWrite: event.target.checked,
+                    mode: event.target.checked ? "external_db_write" : "external_db_query",
+                    toolId: "database"
+                  }
+                })
+              }
+              type="checkbox"
+            />
+            Allow DB INSERT/UPDATE/DELETE
+          </label>
         </div>
       ) : null}
 
@@ -280,17 +401,118 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
       ) : null}
 
       {node.type === "router" ? (
-        <label className="block text-xs">
-          <div className="mb-1 text-slate-600">Condition</div>
-          <input
-            className="w-full rounded border border-slate-300 px-2 py-1"
-            onChange={(event) =>
-              onUpdateNode(node.id, { config: { ...node.config, condition: event.target.value } })
-            }
-            placeholder="confidence < 0.6"
-            value={condition}
-          />
-        </label>
+        <div className="space-y-2">
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Condition (legacy)</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, condition: event.target.value } })
+              }
+              placeholder="variables.riskScore > 0.7"
+              value={condition}
+            />
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Routes JSON Array</div>
+            <textarea
+              className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-[11px]"
+              onChange={(event) => {
+                let next: unknown[] = [];
+                try {
+                  const parsed = JSON.parse(event.target.value) as unknown;
+                  if (Array.isArray(parsed)) {
+                    next = parsed;
+                  }
+                } catch {
+                  next = [];
+                }
+                onUpdateNode(node.id, { config: { ...node.config, routes: next } });
+              }}
+              placeholder='[{"label":"Approve","condition":"variables.riskScore < 0.7","toNodeId":"node_xxx"}]'
+              rows={4}
+              value={routesRaw}
+            />
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Default Route Node ID</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, defaultRouteToNodeId: event.target.value } })
+              }
+              placeholder="node_target"
+              value={defaultRouteToNodeId}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              checked={requiresApproval}
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, requiresApproval: event.target.checked } })
+              }
+              type="checkbox"
+            />
+            Require approval before evaluating routes
+          </label>
+          <div className="text-[11px] text-slate-500">Current routes: {routes.length}</div>
+        </div>
+      ) : null}
+
+      {node.type === "memory" ? (
+        <div className="space-y-2">
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Mode</div>
+            <select
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) => onUpdateNode(node.id, { config: { ...node.config, mode: event.target.value } })}
+              value={memoryMode}
+            >
+              <option value="write">write</option>
+              <option value="read">read</option>
+            </select>
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Key</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) => onUpdateNode(node.id, { config: { ...node.config, key: event.target.value } })}
+              placeholder="customer_profile"
+              value={memoryKey}
+            />
+          </label>
+          {memoryMode === "write" ? (
+            <label className="block text-xs">
+              <div className="mb-1 text-slate-600">Value (JSON or string)</div>
+              <textarea
+                className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-[11px]"
+                onChange={(event) => {
+                  let parsed: unknown = event.target.value;
+                  try {
+                    parsed = JSON.parse(event.target.value);
+                  } catch {
+                    parsed = event.target.value;
+                  }
+                  onUpdateNode(node.id, { config: { ...node.config, value: parsed } });
+                }}
+                rows={3}
+                value={memoryValueRaw}
+              />
+            </label>
+          ) : (
+            <label className="block text-xs">
+              <div className="mb-1 text-slate-600">Assign To</div>
+              <input
+                className="w-full rounded border border-slate-300 px-2 py-1"
+                onChange={(event) =>
+                  onUpdateNode(node.id, { config: { ...node.config, assignTo: event.target.value } })
+                }
+                placeholder="variables.customerProfile"
+                value={memoryAssignTo}
+              />
+            </label>
+          )}
+        </div>
       ) : null}
 
       {node.type === "debate" ? (
@@ -341,6 +563,59 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
               rows={4}
               value={participantsRaw}
             />
+          </label>
+        </div>
+      ) : null}
+
+      {node.type === "output" ? (
+        <div className="space-y-2">
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Output Mode</div>
+            <select
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, outputMode: event.target.value } })
+              }
+              value={outputMode}
+            >
+              <option value="run_summary">run_summary</option>
+              <option value="webhook">webhook</option>
+            </select>
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Message Template</div>
+            <textarea
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, messageTemplate: event.target.value } })
+              }
+              placeholder="# Summary for {{workflowId}}"
+              rows={3}
+              value={messageTemplate}
+            />
+          </label>
+          {outputMode === "webhook" ? (
+            <label className="block text-xs">
+              <div className="mb-1 text-slate-600">Webhook URL</div>
+              <input
+                className="w-full rounded border border-slate-300 px-2 py-1"
+                onChange={(event) =>
+                  onUpdateNode(node.id, { config: { ...node.config, webhookUrl: event.target.value } })
+                }
+                placeholder="https://example.com/hook"
+                value={webhookUrl}
+              />
+            </label>
+          ) : null}
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              checked={includeContext}
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, includeContext: event.target.checked } })
+              }
+              type="checkbox"
+            />
+            Include context payload
           </label>
         </div>
       ) : null}

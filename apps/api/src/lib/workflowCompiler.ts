@@ -34,6 +34,12 @@ type CompileResult = {
   steps: WorkflowStep[];
 };
 
+type RouterRoute = {
+  label: string;
+  condition: string;
+  toNodeId: string;
+};
+
 function inferAgentName(node: DraftNode) {
   const explicit = node.config.agentName;
   if (typeof explicit === "string" && explicit.trim()) {
@@ -41,13 +47,13 @@ function inferAgentName(node: DraftNode) {
   }
 
   if (node.type === "llm") {
-    return "Notification Agent";
+    return "LLM Agent";
   }
   if (node.type === "tool") {
     return "Logistics Agent";
   }
   if (node.type === "memory") {
-    return "Inventory Agent";
+    return "Memory Agent";
   }
   if (node.type === "debate") {
     return "Debate Agent";
@@ -134,17 +140,47 @@ export function compileWorkflowDraft(config: DraftConfig): CompileResult {
   );
 
   const steps: WorkflowStep[] = ordered.map((node) => {
-    const isApproval = node.type === "router" || node.type === "approval";
+    const outgoing = (adjacency.get(node.id) ?? []).filter((target) => nodeById.has(target));
+    const isRouter = node.type === "router";
+    const isApproval = node.type === "approval";
     const toolId = typeof node.config.toolId === "string" ? node.config.toolId : "";
     const linkedToolConfig = toolId ? toolConfigById.get(toolId) : undefined;
+    const rawRoutes = Array.isArray(node.config.routes) ? node.config.routes : [];
+    const routes = rawRoutes
+      .map((entry) => (entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null))
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+      .map((entry) => ({
+        label:
+          typeof entry.label === "string" && entry.label.trim()
+            ? entry.label.trim()
+            : typeof entry.condition === "string"
+              ? entry.condition.trim()
+              : "Route",
+        condition: typeof entry.condition === "string" ? entry.condition.trim() : "",
+        toNodeId: typeof entry.toNodeId === "string" ? entry.toNodeId.trim() : ""
+      }))
+      .filter((entry): entry is RouterRoute => Boolean(entry.condition && entry.toNodeId && nodeById.has(entry.toNodeId)));
+    const explicitDefault =
+      typeof node.config.defaultRouteToNodeId === "string" ? node.config.defaultRouteToNodeId.trim() : "";
+    const defaultRouteToNodeId = explicitDefault && nodeById.has(explicitDefault) ? explicitDefault : outgoing[0];
+
     return {
       id: node.id,
       name: nodeLabel(node),
-      kind: isApproval ? "APPROVAL" : "AGENT",
-      agentName: isApproval ? undefined : inferAgentName(node),
+      kind: isRouter ? "ROUTER" : isApproval ? "APPROVAL" : "AGENT",
+      agentName: isRouter || isApproval ? undefined : inferAgentName(node),
       params: {
         ...linkedToolConfig,
-        ...node.config
+        ...node.config,
+        ...(isRouter
+          ? {
+              routes,
+              defaultRouteToNodeId,
+              requiresApproval: node.config.requiresApproval === true
+            }
+          : {
+              nextStepId: outgoing[0]
+            })
       }
     };
   });

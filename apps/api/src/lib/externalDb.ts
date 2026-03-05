@@ -5,6 +5,7 @@ type QueryParams = {
   query: string;
   params?: unknown[];
   maxRows?: number;
+  allowWrite?: boolean;
 };
 
 type QueryResult = {
@@ -18,6 +19,11 @@ const postgresPoolByConn = new Map<string, any>();
 function isReadOnlyQuery(query: string) {
   const normalized = query.trim().toLowerCase();
   return normalized.startsWith("select") || normalized.startsWith("with") || normalized.startsWith("pragma");
+}
+
+function hasLikelyWriteKeyword(query: string) {
+  const normalized = query.trim().toLowerCase();
+  return /(^|\s)(insert|update|delete|create|alter|drop|truncate|replace)(\s|$)/.test(normalized);
 }
 
 function resolveEngine(connectionString: string): "postgres" | "sqlite" {
@@ -44,16 +50,19 @@ async function getPostgresPool(connectionString: string) {
   return pool;
 }
 
-export async function executeReadOnlyExternalQuery(input: QueryParams): Promise<QueryResult> {
-  const { connectionString, query, params = [], maxRows = 200 } = input;
+export async function executeExternalQuery(input: QueryParams): Promise<QueryResult> {
+  const { connectionString, query, params = [], maxRows = 200, allowWrite = false } = input;
   if (!connectionString.trim()) {
     throw new Error("Missing database connection string.");
   }
   if (!query.trim()) {
     throw new Error("Missing SQL query.");
   }
-  if (!isReadOnlyQuery(query)) {
+  if (!allowWrite && !isReadOnlyQuery(query)) {
     throw new Error("Only read-only SQL is allowed. Use SELECT or WITH.");
+  }
+  if (allowWrite && !hasLikelyWriteKeyword(query) && !isReadOnlyQuery(query)) {
+    throw new Error("Query is neither recognized read-only nor recognized write SQL.");
   }
 
   const engine = resolveEngine(connectionString);
@@ -63,12 +72,17 @@ export async function executeReadOnlyExternalQuery(input: QueryParams): Promise<
     try {
       await client.query("BEGIN");
       await client.query("SET LOCAL statement_timeout = 5000");
-      await client.query("SET LOCAL TRANSACTION READ ONLY");
-      const text = `SELECT * FROM (${query}) AS t LIMIT ${Math.max(1, Math.min(maxRows, 2000))}`;
+      if (!allowWrite) {
+        await client.query("SET LOCAL TRANSACTION READ ONLY");
+      }
+      const readMode = isReadOnlyQuery(query);
+      const text = readMode
+        ? `SELECT * FROM (${query}) AS t LIMIT ${Math.max(1, Math.min(maxRows, 2000))}`
+        : query;
       const result = await client.query(text, params);
       await client.query("COMMIT");
       return {
-        rows: (result.rows ?? []) as Array<Record<string, unknown>>,
+        rows: readMode ? ((result.rows ?? []) as Array<Record<string, unknown>>) : [],
         rowCount: Number(result.rowCount ?? 0),
         engine
       };
@@ -80,14 +94,20 @@ export async function executeReadOnlyExternalQuery(input: QueryParams): Promise<
     }
   }
 
-  const db = new Database(connectionString, { readonly: true, fileMustExist: true });
+  const db = new Database(connectionString, { readonly: !allowWrite, fileMustExist: true });
   try {
     const stmt = db.prepare(query);
-    const rows = stmt.all(...params) as Array<Record<string, unknown>>;
+    const readMode = isReadOnlyQuery(query);
+    const rows = readMode ? (stmt.all(...params) as Array<Record<string, unknown>>) : [];
     const bounded = rows.slice(0, Math.max(1, Math.min(maxRows, 2000)));
+    let rowCount = bounded.length;
+    if (!readMode) {
+      const info = stmt.run(...params) as { changes?: number };
+      rowCount = Number(info.changes ?? 0);
+    }
     return {
       rows: bounded,
-      rowCount: bounded.length,
+      rowCount,
       engine
     };
   } finally {
@@ -95,3 +115,9 @@ export async function executeReadOnlyExternalQuery(input: QueryParams): Promise<
   }
 }
 
+export async function executeReadOnlyExternalQuery(input: QueryParams): Promise<QueryResult> {
+  return executeExternalQuery({
+    ...input,
+    allowWrite: false
+  });
+}

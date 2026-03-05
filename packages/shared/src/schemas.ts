@@ -6,7 +6,7 @@ export type Role = z.infer<typeof RoleSchema>;
 export const ProviderSchema = z.enum(["openai", "anthropic", "gemini"]);
 export type Provider = z.infer<typeof ProviderSchema>;
 
-export const StepKindSchema = z.enum(["AGENT", "APPROVAL"]);
+export const StepKindSchema = z.enum(["AGENT", "APPROVAL", "ROUTER"]);
 export type StepKind = z.infer<typeof StepKindSchema>;
 
 export const RunStatusSchema = z.enum([
@@ -76,6 +76,37 @@ export const RunStepStateSchema = z.object({
 });
 export type RunStepState = z.infer<typeof RunStepStateSchema>;
 
+export const WarRoomEventTypeSchema = z.enum([
+  "AGENT_ALERT",
+  "DEBATE_RESULT",
+  "ROUTER_DECISION_REQUIRED",
+  "WORKFLOW_STATUS_UPDATE"
+]);
+export type WarRoomEventType = z.infer<typeof WarRoomEventTypeSchema>;
+
+export const WarRoomEventSchema = z.object({
+  id: z.number().int().positive().optional(),
+  runId: z.string().min(1),
+  workflowId: z.string().min(1),
+  stepId: z.string().optional(),
+  type: WarRoomEventTypeSchema,
+  timestamp: z.string(),
+  payload: z.record(z.any()).default({})
+});
+export type WarRoomEvent = z.infer<typeof WarRoomEventSchema>;
+
+export const WarRoomDecisionSchema = z.object({
+  id: z.string(),
+  runId: z.string(),
+  workflowId: z.string(),
+  routerStepId: z.string(),
+  status: z.enum(["PENDING", "APPROVED", "REJECTED"]),
+  decision: z.enum(["approve", "reject"]).nullable().optional(),
+  requestedAt: z.string(),
+  decidedAt: z.string().nullable().optional()
+});
+export type WarRoomDecision = z.infer<typeof WarRoomDecisionSchema>;
+
 export const RunStateSchema = z.object({
   runId: z.string(),
   teamId: z.string(),
@@ -133,8 +164,15 @@ export const AGENT_CATALOG: AgentCatalogEntry[] = [
       "registry.get_workflow_version",
       "registry.list_agents",
       "store.get_run",
+      "store.list_run_events",
+      "store.list_run_steps",
       "store.upsert_run_state",
+      "store.upsert_run_step",
       "store.write_output",
+      "store.append_run_event",
+      "store.create_router_decision",
+      "store.resolve_router_decision",
+      "store.list_pending_router_decisions",
       "audit.append_record",
       "audit.query_records"
     ],
@@ -190,6 +228,20 @@ export const AGENT_CATALOG: AgentCatalogEntry[] = [
     }
   },
   {
+    name: "LLM Agent",
+    type: "TASK",
+    description: "Executes direct prompt-based LLM steps with provider/model selection.",
+    allowlist: ["audit.append_record", "store.write_output"],
+    defaultParams: {}
+  },
+  {
+    name: "Memory Agent",
+    type: "TASK",
+    description: "Persists and retrieves workflow memory key/value data.",
+    allowlist: ["audit.append_record", "store.write_output", "store.set_memory", "store.get_memory"],
+    defaultParams: {}
+  },
+  {
     name: "Notification Agent",
     type: "TASK",
     description: "Builds stakeholder notification messages.",
@@ -206,6 +258,89 @@ export const AGENT_CATALOG: AgentCatalogEntry[] = [
 ];
 
 export const BUILTIN_WORKFLOW_TEMPLATES = [
+  {
+    name: "war-room-response",
+    description: "Runbook workflow for live War Room supplier risk mitigation.",
+    changelog: "Seeded template",
+    steps: [
+      {
+        id: "inventory-scan",
+        name: "Inventory Scan",
+        kind: "AGENT" as const,
+        agentName: "LLM Agent",
+        params: {
+          toolId: "database",
+          query: "SELECT sku, on_hand, reserved, supplier_id FROM inventory WHERE (on_hand - reserved) < 25 ORDER BY sku LIMIT 100",
+          prompt: "Detect low-inventory risks and summarize alert severity by supplier."
+        }
+      },
+      {
+        id: "risk-detect",
+        name: "Detect Risk",
+        kind: "AGENT" as const,
+        agentName: "Supplier Risk Agent",
+        params: {
+          confidenceThreshold: 0.65
+        }
+      },
+      {
+        id: "multi-model-debate",
+        name: "Debate Mitigation Options",
+        kind: "AGENT" as const,
+        agentName: "LLM Agent",
+        params: {
+          toolId: "debate",
+          debateTopic: "Choose the best mitigation plan for supplier and inventory risks",
+          debateRounds: 2
+        }
+      },
+      {
+        id: "procurement-router",
+        name: "Human Router",
+        kind: "ROUTER" as const,
+        params: {
+          requiresApproval: true,
+          reason: "Human approval required before procurement action.",
+          routes: [
+            {
+              label: "Execute Mitigation",
+              condition: "variables.routerDecision == 'approve'",
+              toNodeId: "execute-mitigation"
+            },
+            {
+              label: "Skip Mitigation",
+              condition: "variables.routerDecision == 'reject'",
+              toNodeId: "run-summary"
+            }
+          ],
+          defaultRouteToNodeId: "run-summary"
+        }
+      },
+      {
+        id: "execute-mitigation",
+        name: "Execute Mitigation",
+        kind: "AGENT" as const,
+        agentName: "LLM Agent",
+        params: {
+          toolId: "database",
+          allowDbWrite: true,
+          stopOnReject: false,
+          query: "INSERT INTO purchase_orders (id, team_id, vendor_id, part_id, qty, status, created_at, updated_at) VALUES ('{{variables.poId}}', 'team-default', '{{variables.vendorId}}', '{{variables.partId}}', {{variables.qty}}, 'DRAFT', '{{variables.now}}', '{{variables.now}}')",
+          prompt: "Create mitigation procurement actions and prepare vendor dispatch updates."
+        }
+      },
+      {
+        id: "run-summary",
+        name: "Run Summary",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "run_summary",
+          messageTemplate: "# War Room Summary\n\n{{lastOutput}}"
+        }
+      }
+    ]
+  },
   {
     name: "Backorder Resolution",
     description: "Resolve order backorders with cost-aware logistics and approvals.",
@@ -271,6 +406,63 @@ export const BUILTIN_WORKFLOW_TEMPLATES = [
         name: "Risk Approval",
         kind: "APPROVAL" as const,
         params: { reason: "Supplier risk requires approver" }
+      }
+    ]
+  },
+  {
+    name: "Procurement Scan",
+    description: "Scan low inventory and create draft purchase orders with approval gates.",
+    changelog: "Seeded template",
+    steps: [
+      {
+        id: "scan-low-inventory",
+        name: "Scan Low Inventory",
+        kind: "AGENT" as const,
+        agentName: "LLM Agent",
+        params: {
+          toolId: "database",
+          query: "SELECT sku, on_hand, reserved FROM inventory WHERE (on_hand - reserved) < 20 ORDER BY sku",
+          maxRows: 100,
+          prompt: "Summarize inventory risk and propose PO quantity for each row."
+        }
+      },
+      {
+        id: "procurement-router",
+        name: "Approval Router",
+        kind: "ROUTER" as const,
+        params: {
+          routes: [
+            {
+              label: "Needs Approval",
+              condition: "variables.requiresApproval == true",
+              toNodeId: "po-write"
+            }
+          ],
+          defaultRouteToNodeId: "notify-procurement"
+        }
+      },
+      {
+        id: "po-write",
+        name: "Create Draft PO",
+        kind: "AGENT" as const,
+        agentName: "LLM Agent",
+        params: {
+          toolId: "database",
+          allowDbWrite: true,
+          stopOnReject: false,
+          query: "INSERT INTO purchase_orders (id, team_id, vendor_id, part_id, qty, status, created_at, updated_at) VALUES ('{{variables.poId}}', 'team-default', '{{variables.vendorId}}', '{{variables.partId}}', {{variables.qty}}, 'DRAFT', '{{variables.now}}', '{{variables.now}}')",
+          prompt: "Confirm draft PO write intent."
+        }
+      },
+      {
+        id: "notify-procurement",
+        name: "Output Summary",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "run_summary",
+          messageTemplate: "# Procurement Scan\n\n{{lastOutput}}"
+        }
       }
     ]
   }

@@ -71,6 +71,31 @@ main > * {
   }
 }
 
+.war-room-flow-dot {
+  left: -0.5rem;
+  opacity: 0;
+  animation-name: war-room-flow-dot;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@keyframes war-room-flow-dot {
+  0% {
+    left: -0.5rem;
+    opacity: 0;
+  }
+  14% {
+    opacity: 1;
+  }
+  86% {
+    opacity: 1;
+  }
+  100% {
+    left: calc(100% + 0.5rem);
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;

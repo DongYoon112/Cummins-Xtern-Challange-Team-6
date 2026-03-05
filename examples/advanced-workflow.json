@@ -40,7 +40,7 @@
           "routes": [
             {
               "label": "Write Draft PO",
-              "condition": "steps.debate_1.output.finalRecommendation != \"\"",
+              "condition": "steps.debate_1.output.finalRecommendation.decision == \"APPROVE\"",
               "toNodeId": "llm_write"
             }
           ],
@@ -92,7 +92,7 @@
           "label": "Summary Output",
           "outputMode": "run_summary",
           "includeContext": true,
-          "messageTemplate": "# Workflow Summary\n\n- Debate: {{steps.debate_1.output.finalRecommendation}}\n- Last PO decision: {{variables.lastPoDecision}}\n- Last output: {{lastOutput}}"
+          "messageTemplate": "# Workflow Summary\n\n- Debate Decision: {{steps.debate_1.output.finalRecommendation.decision}}\n- Debate Confidence: {{steps.debate_1.output.finalRecommendation.confidence}}\n- Last PO decision: {{variables.lastPoDecision}}\n- Last output: {{lastOutput}}"
         }
       }
     ],

@@ -28,6 +28,282 @@ const PORT = Number(process.env.API_PORT ?? 4000);
 
 initApiDb();
 
+function normalizePublishResult(input: unknown): { workflowId: string; version: number } {
+  const maybe = input as {
+    workflowId?: unknown;
+    id?: unknown;
+    workflow_id?: unknown;
+    version?: unknown;
+    latestVersion?: unknown;
+    latest_version?: unknown;
+    workflowVersion?: unknown;
+    workflow?: unknown;
+    data?: unknown;
+    result?: unknown;
+    structuredContent?: unknown;
+    content?: Array<{ type?: string; text?: string }>;
+  };
+
+  const directWorkflowId =
+    (typeof maybe.workflowId === "string" && maybe.workflowId) ||
+    (typeof maybe.id === "string" && maybe.id) ||
+    (typeof maybe.workflow_id === "string" && maybe.workflow_id) ||
+    "";
+  const directVersion = Number(
+    maybe.version ?? maybe.latestVersion ?? maybe.latest_version ?? maybe.workflowVersion
+  );
+  if (directWorkflowId && Number.isFinite(directVersion) && directVersion > 0) {
+    return { workflowId: directWorkflowId, version: directVersion };
+  }
+
+  const structured = maybe.structuredContent as
+    | {
+        workflowId?: unknown;
+        id?: unknown;
+        workflow_id?: unknown;
+        version?: unknown;
+        latestVersion?: unknown;
+        latest_version?: unknown;
+        workflowVersion?: unknown;
+      }
+    | undefined;
+  const structuredWorkflowId =
+    (typeof structured?.workflowId === "string" && structured.workflowId) ||
+    (typeof structured?.id === "string" && structured.id) ||
+    (typeof structured?.workflow_id === "string" && structured.workflow_id) ||
+    "";
+  const structuredVersion = Number(
+    structured?.version ?? structured?.latestVersion ?? structured?.latest_version ?? structured?.workflowVersion
+  );
+  if (structuredWorkflowId && Number.isFinite(structuredVersion) && structuredVersion > 0) {
+    return { workflowId: structuredWorkflowId, version: structuredVersion };
+  }
+
+  const nestedCandidates = [maybe.workflow, maybe.data, maybe.result] as Array<unknown>;
+  for (const candidate of nestedCandidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const nested = candidate as {
+      workflowId?: unknown;
+      id?: unknown;
+      workflow_id?: unknown;
+      version?: unknown;
+      latestVersion?: unknown;
+      latest_version?: unknown;
+      workflowVersion?: unknown;
+    };
+    const nestedWorkflowId =
+      (typeof nested.workflowId === "string" && nested.workflowId) ||
+      (typeof nested.id === "string" && nested.id) ||
+      (typeof nested.workflow_id === "string" && nested.workflow_id) ||
+      "";
+    const nestedVersion = Number(
+      nested.version ?? nested.latestVersion ?? nested.latest_version ?? nested.workflowVersion
+    );
+    if (nestedWorkflowId && Number.isFinite(nestedVersion) && nestedVersion > 0) {
+      return { workflowId: nestedWorkflowId, version: nestedVersion };
+    }
+  }
+
+  const text = maybe.content?.find((entry) => entry.type === "text")?.text;
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as {
+        workflowId?: unknown;
+        id?: unknown;
+        workflow_id?: unknown;
+        version?: unknown;
+        latestVersion?: unknown;
+        latest_version?: unknown;
+        workflowVersion?: unknown;
+        workflow?: unknown;
+        data?: unknown;
+        result?: unknown;
+      };
+      const parsedWorkflowId =
+        (typeof parsed.workflowId === "string" && parsed.workflowId) ||
+        (typeof parsed.id === "string" && parsed.id) ||
+        (typeof parsed.workflow_id === "string" && parsed.workflow_id) ||
+        "";
+      const parsedVersion = Number(
+        parsed.version ?? parsed.latestVersion ?? parsed.latest_version ?? parsed.workflowVersion
+      );
+      if (parsedWorkflowId && Number.isFinite(parsedVersion) && parsedVersion > 0) {
+        return { workflowId: parsedWorkflowId, version: parsedVersion };
+      }
+
+      const nestedParsedCandidates = [parsed.workflow, parsed.data, parsed.result] as Array<unknown>;
+      for (const candidate of nestedParsedCandidates) {
+        if (!candidate || typeof candidate !== "object") continue;
+        const nested = candidate as {
+          workflowId?: unknown;
+          id?: unknown;
+          workflow_id?: unknown;
+          version?: unknown;
+          latestVersion?: unknown;
+          latest_version?: unknown;
+          workflowVersion?: unknown;
+        };
+        const nestedWorkflowId =
+          (typeof nested.workflowId === "string" && nested.workflowId) ||
+          (typeof nested.id === "string" && nested.id) ||
+          (typeof nested.workflow_id === "string" && nested.workflow_id) ||
+          "";
+        const nestedVersion = Number(
+          nested.version ?? nested.latestVersion ?? nested.latest_version ?? nested.workflowVersion
+        );
+        if (nestedWorkflowId && Number.isFinite(nestedVersion) && nestedVersion > 0) {
+          return { workflowId: nestedWorkflowId, version: nestedVersion };
+        }
+      }
+    } catch {
+      // handled below
+    }
+  }
+
+  throw new Error("Invalid publish response from registry.");
+}
+
+function normalizeWorkflowVersionResult(input: unknown): { workflowId: string; version: number } {
+  const maybe = input as {
+    workflowId?: unknown;
+    id?: unknown;
+    workflow_id?: unknown;
+    version?: unknown;
+    latestVersion?: unknown;
+    latest_version?: unknown;
+    workflowVersion?: unknown;
+    workflow?: unknown;
+    data?: unknown;
+    structuredContent?: unknown;
+    content?: Array<{ type?: string; text?: string }>;
+  };
+
+  const directWorkflowId =
+    (typeof maybe.workflowId === "string" && maybe.workflowId) ||
+    (typeof maybe.id === "string" && maybe.id) ||
+    (typeof maybe.workflow_id === "string" && maybe.workflow_id) ||
+    "";
+  const directVersion = Number(
+    maybe.version ?? maybe.latestVersion ?? maybe.latest_version ?? maybe.workflowVersion
+  );
+  if (directWorkflowId && Number.isFinite(directVersion) && directVersion > 0) {
+    return { workflowId: directWorkflowId, version: directVersion };
+  }
+
+  const structured = maybe.structuredContent as
+    | {
+        workflowId?: unknown;
+        id?: unknown;
+        workflow_id?: unknown;
+        version?: unknown;
+        latestVersion?: unknown;
+        latest_version?: unknown;
+        workflowVersion?: unknown;
+      }
+    | undefined;
+  const structuredWorkflowId =
+    (typeof structured?.workflowId === "string" && structured.workflowId) ||
+    (typeof structured?.id === "string" && structured.id) ||
+    (typeof structured?.workflow_id === "string" && structured.workflow_id) ||
+    "";
+  const structuredVersion = Number(
+    structured?.version ?? structured?.latestVersion ?? structured?.latest_version ?? structured?.workflowVersion
+  );
+  if (structuredWorkflowId && Number.isFinite(structuredVersion) && structuredVersion > 0) {
+    return { workflowId: structuredWorkflowId, version: structuredVersion };
+  }
+
+  const nestedCandidates = [maybe.workflow, maybe.data] as Array<unknown>;
+  for (const candidate of nestedCandidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const nested = candidate as {
+      workflowId?: unknown;
+      id?: unknown;
+      workflow_id?: unknown;
+      version?: unknown;
+      latestVersion?: unknown;
+      latest_version?: unknown;
+      workflowVersion?: unknown;
+    };
+    const nestedWorkflowId =
+      (typeof nested.workflowId === "string" && nested.workflowId) ||
+      (typeof nested.id === "string" && nested.id) ||
+      (typeof nested.workflow_id === "string" && nested.workflow_id) ||
+      "";
+    const nestedVersion = Number(
+      nested.version ?? nested.latestVersion ?? nested.latest_version ?? nested.workflowVersion
+    );
+    if (nestedWorkflowId && Number.isFinite(nestedVersion) && nestedVersion > 0) {
+      return { workflowId: nestedWorkflowId, version: nestedVersion };
+    }
+  }
+
+  const text = maybe.content?.find((entry) => entry.type === "text")?.text;
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as {
+        workflowId?: unknown;
+        id?: unknown;
+        workflow_id?: unknown;
+        version?: unknown;
+        latestVersion?: unknown;
+        latest_version?: unknown;
+        workflowVersion?: unknown;
+        workflow?: unknown;
+        data?: unknown;
+      };
+      const parsedWorkflowId =
+        (typeof parsed.workflowId === "string" && parsed.workflowId) ||
+        (typeof parsed.id === "string" && parsed.id) ||
+        (typeof parsed.workflow_id === "string" && parsed.workflow_id) ||
+        "";
+      const parsedVersion = Number(
+        parsed.version ?? parsed.latestVersion ?? parsed.latest_version ?? parsed.workflowVersion
+      );
+      if (parsedWorkflowId && Number.isFinite(parsedVersion) && parsedVersion > 0) {
+        return { workflowId: parsedWorkflowId, version: parsedVersion };
+      }
+
+      const nestedParsedCandidates = [parsed.workflow, parsed.data] as Array<unknown>;
+      for (const candidate of nestedParsedCandidates) {
+        if (!candidate || typeof candidate !== "object") continue;
+        const nested = candidate as {
+          workflowId?: unknown;
+          id?: unknown;
+          workflow_id?: unknown;
+          version?: unknown;
+          latestVersion?: unknown;
+          latest_version?: unknown;
+          workflowVersion?: unknown;
+        };
+        const nestedWorkflowId =
+          (typeof nested.workflowId === "string" && nested.workflowId) ||
+          (typeof nested.id === "string" && nested.id) ||
+          (typeof nested.workflow_id === "string" && nested.workflow_id) ||
+          "";
+        const nestedVersion = Number(
+          nested.version ?? nested.latestVersion ?? nested.latest_version ?? nested.workflowVersion
+        );
+        if (nestedWorkflowId && Number.isFinite(nestedVersion) && nestedVersion > 0) {
+          return { workflowId: nestedWorkflowId, version: nestedVersion };
+        }
+      }
+    } catch {
+      // handled below
+    }
+  }
+
+  throw new Error("Invalid workflow version response from registry.");
+}
+
+function payloadErrorMessage(input: unknown): string | null {
+  if (!input || typeof input !== "object") return null;
+  const maybe = input as { error?: unknown; message?: unknown };
+  if (typeof maybe.error === "string" && maybe.error.trim()) return maybe.error.trim();
+  if (typeof maybe.message === "string" && maybe.message.trim()) return maybe.message.trim();
+  return null;
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -239,18 +515,146 @@ app.post("/workflows/draft/:draftId/publish", requireRoles("BUILDER"), async (re
     };
 
     const compiled = compileWorkflowDraft(config);
-    const publishResult = await callMcpTool<Record<string, unknown>, Record<string, unknown>>("registry", "save_workflow_version", {
-      teamId: req.user!.teamId,
-      workflowId: config.id,
-      name: config.name || row.name,
-      description: config.description,
-      changelog: parsed.data.changelog,
-      createdBy: req.user!.id,
-      steps: compiled.steps
-    });
+    let publishResult: Record<string, unknown>;
+    let usedCreateRetry = false;
+    try {
+      publishResult = await callMcpTool<Record<string, unknown>, Record<string, unknown>>("registry", "save_workflow_version", {
+        teamId: req.user!.teamId,
+        workflowId: config.id,
+        name: config.name || row.name,
+        description: config.description,
+        changelog: parsed.data.changelog,
+        createdBy: req.user!.id,
+        steps: compiled.steps
+      });
+      const directError = payloadErrorMessage(publishResult);
+      if (directError) {
+        throw new Error(directError);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      // New local drafts use temporary IDs that may not exist in registry yet.
+      // Retry without workflowId to create the repository on first publish.
+      if (!message.includes("unknown workflow")) {
+        throw error;
+      }
+      usedCreateRetry = true;
+      publishResult = await callMcpTool<Record<string, unknown>, Record<string, unknown>>("registry", "save_workflow_version", {
+        teamId: req.user!.teamId,
+        name: config.name || row.name,
+        description: config.description,
+        changelog: parsed.data.changelog,
+        createdBy: req.user!.id,
+        steps: compiled.steps
+      });
+      const retryError = payloadErrorMessage(publishResult);
+      if (retryError) {
+        throw new Error(retryError);
+      }
+    }
+    let normalizedPublish: { workflowId: string; version: number };
+    try {
+      normalizedPublish = normalizePublishResult(publishResult);
+    } catch {
+      // Fallback: read the latest version directly if save response shape is non-standard.
+      try {
+        const fallbackLookupId = config.id;
+        const latest = await callMcpTool<{ workflowId: string }, unknown>("registry", "get_workflow_version", {
+          workflowId: fallbackLookupId
+        });
+        const latestError = payloadErrorMessage(latest);
+        if (latestError) {
+          throw new Error(latestError);
+        }
+        normalizedPublish = normalizeWorkflowVersionResult(latest);
+      } catch {
+        // Final fallback: derive latest version from workflow listing.
+        const listed = await callMcpTool<{ teamId: string }, { workflows?: unknown[] }>("registry", "list_workflows", {
+          teamId: req.user!.teamId
+        });
+        const listError = payloadErrorMessage(listed);
+        if (listError) {
+          throw new Error(listError);
+        }
+        const rows = (listed.workflows ?? []) as Array<Record<string, unknown>>;
+        const byId = rows.find((entry) => {
+          const row = entry as { workflowId?: unknown; id?: unknown };
+          return row.workflowId === config.id || row.id === config.id;
+        }) as
+          | {
+              workflowId?: unknown;
+              id?: unknown;
+              latestVersion?: unknown;
+              latest_version?: unknown;
+              version?: unknown;
+              updatedAt?: unknown;
+              updated_at?: unknown;
+            }
+          | undefined;
+
+        const byName = rows.find((entry) => {
+          const row = entry as { name?: unknown };
+          return typeof row.name === "string" && row.name === (config.name || row.name);
+        }) as
+          | {
+              workflowId?: unknown;
+              id?: unknown;
+              latestVersion?: unknown;
+              latest_version?: unknown;
+              version?: unknown;
+              updatedAt?: unknown;
+              updated_at?: unknown;
+            }
+          | undefined;
+
+        const byRecent = [...rows]
+          .sort((a, b) => {
+            const aTs = Date.parse(String(a.updatedAt ?? a.updated_at ?? ""));
+            const bTs = Date.parse(String(b.updatedAt ?? b.updated_at ?? ""));
+            if (Number.isNaN(aTs) && Number.isNaN(bTs)) return 0;
+            if (Number.isNaN(aTs)) return 1;
+            if (Number.isNaN(bTs)) return -1;
+            return bTs - aTs;
+          })
+          .find((entry) => {
+            const version = Number(entry.latestVersion ?? entry.latest_version ?? entry.version);
+            const workflowId =
+              (typeof entry.workflowId === "string" && entry.workflowId) ||
+              (typeof entry.id === "string" && entry.id) ||
+              "";
+            return workflowId && Number.isFinite(version) && version > 0;
+          }) as
+          | {
+              workflowId?: unknown;
+              id?: unknown;
+              latestVersion?: unknown;
+              latest_version?: unknown;
+              version?: unknown;
+            }
+          | undefined;
+
+        const match = byId ?? (usedCreateRetry ? byName ?? byRecent : undefined);
+        const fallbackWorkflowId =
+          (typeof match?.workflowId === "string" && match.workflowId) ||
+          (typeof match?.id === "string" && match.id) ||
+          (usedCreateRetry ? "" : config.id);
+        const fallbackVersion = Number(
+          match?.latestVersion ?? match?.latest_version ?? match?.version ?? (usedCreateRetry ? 1 : NaN)
+        );
+        if (!Number.isFinite(fallbackVersion) || fallbackVersion <= 0) {
+          throw new Error("Invalid workflow version response from registry.");
+        }
+        if (!fallbackWorkflowId) {
+          throw new Error("Invalid workflow version response from registry.");
+        }
+        normalizedPublish = { workflowId: fallbackWorkflowId, version: fallbackVersion };
+      }
+    }
 
     res.status(201).json({
       ...publishResult,
+      workflowId: normalizedPublish.workflowId,
+      version: normalizedPublish.version,
       sourceDraftId: row.draft_id
     });
   } catch (error) {
@@ -488,7 +892,7 @@ const runCreateSchema = z.object({
   workflowVersion: z.number().int().positive().optional()
 });
 
-app.post("/runs", requireRoles("OPERATOR"), async (req, res) => {
+app.post("/runs", requireRoles("OPERATOR", "BUILDER"), async (req, res) => {
   const parsed = runCreateSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid run payload", details: parsed.error.flatten() });
@@ -509,7 +913,16 @@ app.post("/runs", requireRoles("OPERATOR"), async (req, res) => {
     res.status(201).json({ run });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Failed to execute run" });
+    const message = error instanceof Error ? error.message : "Failed to execute run";
+    if (message.includes("Workflow version not found")) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (message.startsWith("Allowlist violation:")) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    res.status(500).json({ error: message });
   }
 });
 

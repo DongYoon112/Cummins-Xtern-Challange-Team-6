@@ -1,6 +1,5 @@
 import { Router } from "express";
 import type { RunState, WarRoomEvent, WarRoomDecision } from "@agentfoundry/shared";
-import { BUILTIN_WORKFLOW_TEMPLATES } from "@agentfoundry/shared";
 import { z } from "zod";
 import { orchestrator } from "../agents/orchestrator";
 import { callMcpTool } from "../lib/mcpClient";
@@ -8,9 +7,8 @@ import { callMcpTool } from "../lib/mcpClient";
 const router = Router();
 
 const startSchema = z.object({
-  workflowId: z.string().min(1).optional(),
+  workflowId: z.string().min(1),
   workflowVersion: z.number().int().positive().optional(),
-  templateName: z.string().min(1).optional(),
   inputContext: z.record(z.any()).optional()
 });
 
@@ -23,45 +21,6 @@ const decisionSchema = z.object({
 const runControlSchema = z.object({
   runId: z.string().min(1)
 });
-
-async function resolveWarRoomWorkflowId(params: { teamId: string; templateName: string; actorUserId: string }) {
-  const workflows = await callMcpTool<{ teamId: string }, { workflows: Array<Record<string, unknown>> }>("registry", "list_workflows", {
-    teamId: params.teamId
-  });
-
-  const existing = workflows.workflows.find((entry) => {
-    return String(entry.name ?? "").toLowerCase() === params.templateName.toLowerCase();
-  });
-  if (existing && typeof existing.workflowId === "string") {
-    return existing.workflowId;
-  }
-
-  const template = BUILTIN_WORKFLOW_TEMPLATES.find((item) => item.name.toLowerCase() === params.templateName.toLowerCase());
-  if (!template) {
-    throw new Error(`Template not found: ${params.templateName}`);
-  }
-
-  const created = await callMcpTool<
-    {
-      teamId: string;
-      name: string;
-      description?: string;
-      changelog: string;
-      createdBy: string;
-      steps: Array<Record<string, unknown>>;
-    },
-    { workflowId: string }
-  >("registry", "save_workflow_version", {
-    teamId: params.teamId,
-    name: template.name,
-    description: template.description,
-    changelog: "Seeded template for War Room runtime",
-    createdBy: params.actorUserId,
-    steps: template.steps as Array<Record<string, unknown>>
-  });
-
-  return created.workflowId;
-}
 
 async function buildWarRoomSnapshot(runId: string, teamId: string) {
   const [eventsPayload, stepsPayload, decisionPayload, run] = await Promise.all([
@@ -97,21 +56,13 @@ router.post("/start", async (req, res) => {
   }
 
   try {
-    const workflowId =
-      parsed.data.workflowId ??
-      (await resolveWarRoomWorkflowId({
-        teamId: req.user!.teamId,
-        templateName: parsed.data.templateName ?? "war-room-response",
-        actorUserId: req.user!.id
-      }));
-
     const run = await orchestrator.startRun({
       actor: {
         userId: req.user!.id,
         username: req.user!.username,
         teamId: req.user!.teamId
       },
-      workflowId,
+      workflowId: parsed.data.workflowId,
       workflowVersion: parsed.data.workflowVersion
     });
 
@@ -124,7 +75,16 @@ router.post("/start", async (req, res) => {
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Failed to start War Room run" });
+    const message = error instanceof Error ? error.message : "Failed to start War Room run";
+    if (message.includes("Workflow version not found")) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (message.startsWith("Allowlist violation:")) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    res.status(500).json({ error: message });
   }
 });
 

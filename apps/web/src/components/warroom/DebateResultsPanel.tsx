@@ -30,9 +30,15 @@ function toDebateResult(event: RunEvent): DebateResult | null {
   }
 
   const payload = toRecord(root.output) ?? root;
+  const recommendationObject =
+    payload.finalRecommendation && typeof payload.finalRecommendation === "object"
+      ? (payload.finalRecommendation as Record<string, unknown>)
+      : null;
   const finalRecommendation =
     typeof payload.finalRecommendation === "string"
       ? payload.finalRecommendation
+      : typeof recommendationObject?.decision === "string"
+        ? recommendationObject.decision
       : typeof payload.recommendation === "string"
         ? payload.recommendation
         : "";

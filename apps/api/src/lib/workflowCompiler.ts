@@ -42,6 +42,13 @@ type RouterRoute = {
 
 function inferAgentName(node: DraftNode) {
   const explicit = node.config.agentName;
+  if (node.type === "debate") {
+    if (explicit === "CMAPSS Debate Agent" || explicit === "Debate Agent") {
+      return explicit;
+    }
+    return "Debate Agent";
+  }
+
   if (typeof explicit === "string" && explicit.trim()) {
     return explicit.trim();
   }
@@ -52,11 +59,17 @@ function inferAgentName(node: DraftNode) {
   if (node.type === "tool") {
     return "Logistics Agent";
   }
+  if (node.type === "dataset_loader") {
+    return "DatasetLoaderAgent";
+  }
+  if (node.type === "feature_builder") {
+    return "FeatureBuilderAgent";
+  }
+  if (node.type === "db_write") {
+    return "DbWriteAgent";
+  }
   if (node.type === "memory") {
     return "Memory Agent";
-  }
-  if (node.type === "debate") {
-    return "Debate Agent";
   }
   if (node.type === "output") {
     return "Notification Agent";

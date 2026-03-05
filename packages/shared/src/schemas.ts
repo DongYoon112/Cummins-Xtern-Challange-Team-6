@@ -9,6 +9,85 @@ export type Provider = z.infer<typeof ProviderSchema>;
 export const StepKindSchema = z.enum(["AGENT", "APPROVAL", "ROUTER"]);
 export type StepKind = z.infer<typeof StepKindSchema>;
 
+export const DebateStanceSchema = z.enum(["APPROVE", "BLOCK", "CONDITIONAL"]);
+export type DebateStance = z.infer<typeof DebateStanceSchema>;
+
+export const DebateParticipantConfigSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  provider: ProviderSchema,
+  model: z.string().min(1),
+  stance: DebateStanceSchema,
+  systemPrompt: z.string().optional(),
+  weight: z.number().positive().optional()
+});
+export type DebateParticipantConfig = z.infer<typeof DebateParticipantConfigSchema>;
+
+export const DebateArbiterConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  provider: ProviderSchema.optional(),
+  model: z.string().optional(),
+  systemPrompt: z.string().optional()
+});
+export type DebateArbiterConfig = z.infer<typeof DebateArbiterConfigSchema>;
+
+export const DebateNodeConfigSchema = z.object({
+  debateTopic: z.string().optional(),
+  debateRounds: z.number().int().positive().default(2),
+  participants: z.array(DebateParticipantConfigSchema).optional(),
+  arbiter: DebateArbiterConfigSchema.optional(),
+  outputSchemaVersion: z.literal("v1").default("v1"),
+  requireJson: z.boolean().default(true),
+  maxTokens: z.number().int().positive().optional(),
+  temperature: z.number().min(0).max(2).optional()
+});
+export type DebateNodeConfig = z.infer<typeof DebateNodeConfigSchema>;
+
+export const DebateOutputParticipantSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  provider: ProviderSchema,
+  model: z.string().min(1),
+  stance: DebateStanceSchema
+});
+export type DebateOutputParticipant = z.infer<typeof DebateOutputParticipantSchema>;
+
+export const DebateArgumentSchema = z.object({
+  round: z.number().int().positive(),
+  participantId: z.string().min(1),
+  stance: DebateStanceSchema,
+  summary: z.string(),
+  keyPoints: z.array(z.string()),
+  risks: z.array(z.string()),
+  mitigations: z.array(z.string()),
+  confidence: z.number().min(0).max(1),
+  raw: z.string().optional()
+});
+export type DebateArgument = z.infer<typeof DebateArgumentSchema>;
+
+export const DebateFinalRecommendationSchema = z.object({
+  decision: DebateStanceSchema,
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+  conditions: z.array(z.string()),
+  nextActions: z.array(z.string())
+});
+export type DebateFinalRecommendation = z.infer<typeof DebateFinalRecommendationSchema>;
+
+export const DebateOutputSchema = z.object({
+  schemaVersion: z.literal("v1"),
+  topic: z.string(),
+  rounds: z.number().int().positive(),
+  participants: z.array(DebateOutputParticipantSchema),
+  arguments: z.array(DebateArgumentSchema),
+  finalRecommendation: DebateFinalRecommendationSchema,
+  synthesisMode: z.enum(["best_argument", "arbiter"]),
+  meta: z.object({
+    warnings: z.array(z.string())
+  })
+});
+export type DebateOutput = z.infer<typeof DebateOutputSchema>;
+
 export const RunStatusSchema = z.enum([
   "PENDING",
   "RUNNING",
@@ -235,6 +314,61 @@ export const AGENT_CATALOG: AgentCatalogEntry[] = [
     defaultParams: {}
   },
   {
+    name: "Debate Agent",
+    type: "TASK",
+    description: "Runs multi-LLM debate rounds and emits strict recommendation JSON.",
+    allowlist: ["audit.append_record", "store.write_output"],
+    defaultParams: {
+      debateRounds: 2,
+      outputSchemaVersion: "v1",
+      requireJson: true
+    }
+  },
+  {
+    name: "DatasetLoaderAgent",
+    type: "TASK",
+    description: "Loads CMAPSS dataset slices for a specific engine unit.",
+    allowlist: ["audit.append_record", "store.write_output"],
+    defaultParams: {
+      dataset: "FD001",
+      source: "local",
+      window: 50
+    }
+  },
+  {
+    name: "FeatureBuilderAgent",
+    type: "TASK",
+    description: "Builds windowed sensor features and anomaly candidates from CMAPSS rows.",
+    allowlist: ["audit.append_record", "store.write_output"],
+    defaultParams: {
+      window: 50,
+      slope_window: 10
+    }
+  },
+  {
+    name: "CMAPSS Debate Agent",
+    type: "TASK",
+    description: "Generates structured root-cause debate output for engine incidents.",
+    allowlist: ["audit.append_record", "store.write_output"],
+    defaultParams: {}
+  },
+  {
+    name: "Incident Orchestrator Agent",
+    type: "TASK",
+    description: "Converts debate output + feature summary into a normalized incident payload.",
+    allowlist: ["audit.append_record", "store.write_output"],
+    defaultParams: {}
+  },
+  {
+    name: "DbWriteAgent",
+    type: "TASK",
+    description: "Persists incident records to Postgres or SQLite.",
+    allowlist: ["audit.append_record", "store.write_output"],
+    defaultParams: {
+      db_target: "postgres"
+    }
+  },
+  {
     name: "Memory Agent",
     type: "TASK",
     description: "Persists and retrieves workflow memory key/value data.",
@@ -261,7 +395,7 @@ export const BUILTIN_WORKFLOW_TEMPLATES = [
   {
     name: "war-room-response",
     description: "Runbook workflow for live War Room supplier risk mitigation.",
-    changelog: "Seeded template",
+    changelog: "Built-in template",
     steps: [
       {
         id: "inventory-scan",
@@ -287,11 +421,12 @@ export const BUILTIN_WORKFLOW_TEMPLATES = [
         id: "multi-model-debate",
         name: "Debate Mitigation Options",
         kind: "AGENT" as const,
-        agentName: "LLM Agent",
+        agentName: "Debate Agent",
         params: {
-          toolId: "debate",
           debateTopic: "Choose the best mitigation plan for supplier and inventory risks",
-          debateRounds: 2
+          debateRounds: 2,
+          outputSchemaVersion: "v1",
+          requireJson: true
         }
       },
       {
@@ -325,7 +460,7 @@ export const BUILTIN_WORKFLOW_TEMPLATES = [
           toolId: "database",
           allowDbWrite: true,
           stopOnReject: false,
-          query: "INSERT INTO purchase_orders (id, team_id, vendor_id, part_id, qty, status, created_at, updated_at) VALUES ('{{variables.poId}}', 'team-default', '{{variables.vendorId}}', '{{variables.partId}}', {{variables.qty}}, 'DRAFT', '{{variables.now}}', '{{variables.now}}')",
+          query: "INSERT INTO purchase_orders (id, team_id, vendor_id, part_id, qty, status, created_at, updated_at) VALUES ('{{variables.poId}}', '{{teamId}}', '{{variables.vendorId}}', '{{variables.partId}}', {{variables.qty}}, 'DRAFT', '{{variables.now}}', '{{variables.now}}')",
           prompt: "Create mitigation procurement actions and prepare vendor dispatch updates."
         }
       },
@@ -344,7 +479,7 @@ export const BUILTIN_WORKFLOW_TEMPLATES = [
   {
     name: "Backorder Resolution",
     description: "Resolve order backorders with cost-aware logistics and approvals.",
-    changelog: "Seeded template",
+    changelog: "Built-in template",
     steps: [
       {
         id: "inventory-check",
@@ -385,7 +520,7 @@ export const BUILTIN_WORKFLOW_TEMPLATES = [
   {
     name: "Supplier Risk Check",
     description: "Assess supplier risk before PO release.",
-    changelog: "Seeded template",
+    changelog: "Built-in template",
     steps: [
       {
         id: "supplier-risk",
@@ -412,7 +547,7 @@ export const BUILTIN_WORKFLOW_TEMPLATES = [
   {
     name: "Procurement Scan",
     description: "Scan low inventory and create draft purchase orders with approval gates.",
-    changelog: "Seeded template",
+    changelog: "Built-in template",
     steps: [
       {
         id: "scan-low-inventory",
@@ -450,7 +585,7 @@ export const BUILTIN_WORKFLOW_TEMPLATES = [
           toolId: "database",
           allowDbWrite: true,
           stopOnReject: false,
-          query: "INSERT INTO purchase_orders (id, team_id, vendor_id, part_id, qty, status, created_at, updated_at) VALUES ('{{variables.poId}}', 'team-default', '{{variables.vendorId}}', '{{variables.partId}}', {{variables.qty}}, 'DRAFT', '{{variables.now}}', '{{variables.now}}')",
+          query: "INSERT INTO purchase_orders (id, team_id, vendor_id, part_id, qty, status, created_at, updated_at) VALUES ('{{variables.poId}}', '{{teamId}}', '{{variables.vendorId}}', '{{variables.partId}}', {{variables.qty}}, 'DRAFT', '{{variables.now}}', '{{variables.now}}')",
           prompt: "Confirm draft PO write intent."
         }
       },

@@ -52,6 +52,9 @@ const NODE_TYPE_LABELS: Record<WorkflowNodeType, string> = {
   router: "Router",
   memory: "Memory",
   debate: "Debate",
+  dataset_loader: "Dataset Loader",
+  feature_builder: "Feature Builder",
+  db_write: "DB Write",
   output: "Output"
 };
 
@@ -73,6 +76,12 @@ function nodeColor(type: WorkflowNodeType) {
       return "border-orange-300 bg-orange-50";
     case "debate":
       return "border-amber-300 bg-amber-50";
+    case "dataset_loader":
+      return "border-sky-400 bg-sky-50";
+    case "feature_builder":
+      return "border-cyan-400 bg-cyan-50";
+    case "db_write":
+      return "border-fuchsia-400 bg-fuchsia-50";
     case "output":
       return "border-orange-500 bg-orange-50";
     default:
@@ -400,7 +409,20 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
                 onChange={(event) => setNodeTypeToAdd(event.target.value as WorkflowNodeType)}
                 value={nodeTypeToAdd}
               >
-                {(["start", "llm", "tool", "router", "memory", "debate", "output"] as WorkflowNodeType[]).map((type) => (
+                {(
+                  [
+                    "start",
+                    "llm",
+                    "tool",
+                    "router",
+                    "memory",
+                    "debate",
+                    "dataset_loader",
+                    "feature_builder",
+                    "db_write",
+                    "output"
+                  ] as WorkflowNodeType[]
+                ).map((type) => (
                   <option key={type} value={type}>
                     {NODE_TYPE_LABELS[type]}
                   </option>

@@ -5,8 +5,8 @@ import { useAuth } from "../lib/auth";
 export function LoginPage() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
-  const [username, setUsername] = useState("builder");
-  const [password, setPassword] = useState("builder123");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -73,7 +73,7 @@ export function LoginPage() {
         </form>
 
         <div className="mt-5 rounded bg-slate-50 p-3 text-xs text-slate-600">
-          Seed users: admin, builder, operator, approver, auditor. Password pattern: role + 123.
+          Use your configured account credentials.
         </div>
       </div>
     </div>

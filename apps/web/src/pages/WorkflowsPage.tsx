@@ -39,9 +39,14 @@ type WorkflowVersionDetails = {
 };
 
 type PublishPayload = {
-  workflowId: string;
-  version: number;
-  sourceDraftId: string;
+  workflowId?: string;
+  version?: number;
+  sourceDraftId?: string;
+  structuredContent?: {
+    workflowId?: string;
+    version?: number;
+  };
+  content?: Array<{ type?: string; text?: string }>;
 };
 
 type AiTemplate = "ops_runbook" | "research_memo" | "data_analysis" | "code_helper";
@@ -65,29 +70,6 @@ const AI_TOOL_CHOICES = [
   { id: "file_write", label: "File Write" },
   { id: "email_send", label: "Email" },
   { id: "code", label: "Code" }
-] as const;
-
-const EMBEDDED_WORKFLOW_STEPS = [
-  {
-    title: "Describe Task",
-    detail: "Operations manager enters: Monitor supplier delays and notify procurement."
-  },
-  {
-    title: "Generate Flow",
-    detail: "Platform creates a draft graph with monitoring, risk scoring, and alert nodes."
-  },
-  {
-    title: "Review and Edit",
-    detail: "User updates guardrails, thresholds, and routing in the visual builder."
-  },
-  {
-    title: "Deploy",
-    detail: "Workflow is published and ready for automated execution."
-  },
-  {
-    title: "Operate",
-    detail: "Runs execute continuously with alerts and report outputs for teams."
-  }
 ] as const;
 
 function normalizeWorkflowSummary(input: unknown): WorkflowSummary | null {
@@ -166,6 +148,37 @@ function repoDraftStorageKey(repoId: string) {
   return `${WORKFLOW_DRAFT_STORAGE_KEY}.${repoId}`;
 }
 
+function normalizePublishPayload(payload: PublishPayload): { workflowId: string; version: number } {
+  const directWorkflowId = typeof payload.workflowId === "string" ? payload.workflowId.trim() : "";
+  const directVersion = Number(payload.version);
+  if (directWorkflowId && Number.isFinite(directVersion) && directVersion > 0) {
+    return { workflowId: directWorkflowId, version: directVersion };
+  }
+
+  const structuredWorkflowId =
+    typeof payload.structuredContent?.workflowId === "string" ? payload.structuredContent.workflowId.trim() : "";
+  const structuredVersion = Number(payload.structuredContent?.version);
+  if (structuredWorkflowId && Number.isFinite(structuredVersion) && structuredVersion > 0) {
+    return { workflowId: structuredWorkflowId, version: structuredVersion };
+  }
+
+  const text = payload.content?.find((entry) => entry.type === "text")?.text;
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as { workflowId?: unknown; version?: unknown };
+      const parsedWorkflowId = typeof parsed.workflowId === "string" ? parsed.workflowId.trim() : "";
+      const parsedVersion = Number(parsed.version);
+      if (parsedWorkflowId && Number.isFinite(parsedVersion) && parsedVersion > 0) {
+        return { workflowId: parsedWorkflowId, version: parsedVersion };
+      }
+    } catch {
+      // handled below
+    }
+  }
+
+  throw new Error("Publish response missing workflowId/version.");
+}
+
 function buildGraphFromPublishedSteps(
   steps: NonNullable<WorkflowVersionDetails["steps"]>
 ): NonNullable<WorkflowConfig["graph"]> {
@@ -185,10 +198,16 @@ function buildGraphFromPublishedSteps(
         ? "router"
         : step.kind === "ROUTER"
           ? "router"
+        : agent.includes("datasetloader")
+          ? "dataset_loader"
+        : agent.includes("featurebuilder")
+          ? "feature_builder"
+        : agent.includes("dbwrite")
+          ? "db_write"
         : agent.includes("debate")
           ? "debate"
-          : agent.includes("logistics") || typeof step.params?.toolId === "string"
-            ? "tool"
+        : agent.includes("logistics") || typeof step.params?.toolId === "string"
+          ? "tool"
             : agent.includes("notification")
               ? "output"
               : "llm";
@@ -476,6 +495,10 @@ export function WorkflowsPage() {
   }, [activeRepoId, config]);
 
   async function saveDraftToApi() {
+    if (!token) {
+      throw new Error("Authentication token missing. Please sign in again.");
+    }
+
     if (!canSave) {
       throw new Error("Only BUILDER or ADMIN role can save draft to API.");
     }
@@ -484,21 +507,34 @@ export function WorkflowsPage() {
       throw new Error(graphValidation.errors.join(" "));
     }
 
-    if (activeRepoId) {
-      window.localStorage.setItem(repoDraftStorageKey(activeRepoId), JSON.stringify(config));
+    const draftId =
+      (typeof config.id === "string" && config.id.trim()) ||
+      (typeof activeRepoId === "string" && activeRepoId.trim()) ||
+      `wf_${Math.random().toString(36).slice(2, 10)}`;
+    const nextConfig: WorkflowConfig = {
+      ...config,
+      id: draftId,
+      name: config.name || draftId,
+      graph: config.graph ?? { nodes: [], edges: [] }
+    };
+
+    setConfig(nextConfig);
+    if (!activeRepoId) {
+      setActiveRepoId(draftId);
     }
+    window.localStorage.setItem(repoDraftStorageKey(draftId), JSON.stringify(nextConfig));
 
     return apiFetch<{ draft: DraftPayload }>(
       "/workflows/draft",
       {
         method: "POST",
         body: JSON.stringify({
-          id: config.id,
-          name: config.name,
-          config
+          id: draftId,
+          name: nextConfig.name,
+          config: nextConfig
         })
       },
-      token ?? undefined
+      token
     );
   }
 
@@ -523,8 +559,16 @@ export function WorkflowsPage() {
       const saved = await saveDraftToApi();
       setServerDraftUpdatedAt(saved.draft.updatedAt);
 
+      const workflowId = typeof saved.draft.id === "string" ? saved.draft.id.trim() : "";
+      if (!workflowId) {
+        throw new Error("Draft saved but returned empty id. Please retry save.");
+      }
+
+      setConfig((current) => ({ ...current, id: workflowId }));
+      setActiveRepoId(workflowId);
+
       const payload = await apiFetch<PublishPayload>(
-        `/workflows/draft/${encodeURIComponent(config.id)}/publish`,
+        `/workflows/draft/${encodeURIComponent(workflowId)}/publish`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -533,20 +577,21 @@ export function WorkflowsPage() {
         },
         token ?? undefined
       );
+      const normalizedPublish = normalizePublishPayload(payload);
 
       const normalizedConfig: WorkflowConfig = {
         ...config,
-        id: payload.workflowId
+        id: normalizedPublish.workflowId
       };
       setConfig(normalizedConfig);
-      setActiveRepoId(payload.workflowId);
-      setSelectedWorkflowId(payload.workflowId);
-      setPublishedWorkflowId(payload.workflowId);
-      setPublishedVersion(payload.version);
-      window.localStorage.setItem(repoDraftStorageKey(payload.workflowId), JSON.stringify(normalizedConfig));
+      setActiveRepoId(normalizedPublish.workflowId);
+      setSelectedWorkflowId(normalizedPublish.workflowId);
+      setPublishedWorkflowId(normalizedPublish.workflowId);
+      setPublishedVersion(normalizedPublish.version);
+      window.localStorage.setItem(repoDraftStorageKey(normalizedPublish.workflowId), JSON.stringify(normalizedConfig));
 
       await loadWorkflows();
-      setStatus(`Published workflow ${payload.workflowId} v${payload.version}.`);
+      setStatus(`Published workflow ${normalizedPublish.workflowId} v${normalizedPublish.version}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to publish workflow");
     }
@@ -585,18 +630,25 @@ export function WorkflowsPage() {
     setError(null);
 
     try {
+      if (!token) {
+        setError("Authentication token missing. Please sign in again.");
+        return;
+      }
       const workflowId = publishedWorkflowId ?? activeRepoId ?? draftOverride?.id;
+      if (!workflowId) {
+        setError("Publish or select a workflow before launching War Room.");
+        return;
+      }
       const payload = await apiFetch<{ runId: string }>(
         "/api/war-room/start",
         {
           method: "POST",
           body: JSON.stringify({
-            workflowId: workflowId || undefined,
-            workflowVersion: publishedVersion ?? undefined,
-            templateName: "war-room-response"
+            workflowId,
+            workflowVersion: publishedVersion ?? undefined
           })
         },
-        token ?? undefined
+        token
       );
 
       navigate(`/war-room?runId=${encodeURIComponent(payload.runId)}`);
@@ -724,88 +776,6 @@ export function WorkflowsPage() {
     setError(null);
   }
 
-  function loadEmbeddedSupplierWorkflow() {
-    const seed = Math.random().toString(36).slice(2, 8);
-    const startId = `node_start_${seed}`;
-    const monitorId = `node_monitor_${seed}`;
-    const riskId = `node_risk_${seed}`;
-    const approvalId = `node_approval_${seed}`;
-    const alertId = `node_alert_${seed}`;
-    const reportId = `node_report_${seed}`;
-    const outputId = `node_output_${seed}`;
-    const next = createDefaultWorkflowConfig();
-
-    const nextConfig: WorkflowConfig = {
-      ...next,
-      name: "Supplier Delay Monitor",
-      description: "Internal workflow for supplier-delay monitoring, risk scoring, and procurement alerts.",
-      agentType: "Ops/DevOps",
-      llmProvider: "openai",
-      llmModel: "gpt-4.1-mini",
-      tools: next.tools.map((tool) => ({
-        ...tool,
-        enabled: ["database", "http_requests", "calendar_email"].includes(tool.id)
-      })),
-      graph: {
-        nodes: [
-          { id: startId, type: "start", position: { x: 80, y: 180 }, config: { label: "Start" } },
-          {
-            id: monitorId,
-            type: "tool",
-            position: { x: 320, y: 180 },
-            config: { label: "Supplier Data API", description: "Pull delay and ETA events.", toolId: "http_requests" }
-          },
-          {
-            id: riskId,
-            type: "llm",
-            position: { x: 560, y: 180 },
-            config: { label: "Risk Analysis Agent", description: "Score severity and downstream impact." }
-          },
-          {
-            id: approvalId,
-            type: "router",
-            position: { x: 800, y: 180 },
-            config: { label: "Approval Gate", description: "Require manager approval for high-risk alerts." }
-          },
-          {
-            id: alertId,
-            type: "tool",
-            position: { x: 1040, y: 120 },
-            config: { label: "Alert System", description: "Notify procurement and operations.", toolId: "calendar_email" }
-          },
-          {
-            id: reportId,
-            type: "llm",
-            position: { x: 1040, y: 250 },
-            config: { label: "Dashboard Report", description: "Generate concise impact summary." }
-          },
-          { id: outputId, type: "output", position: { x: 1280, y: 180 }, config: { label: "Output" } }
-        ],
-        edges: [
-          { id: `edge_${seed}_1`, source: startId, target: monitorId },
-          { id: `edge_${seed}_2`, source: monitorId, target: riskId },
-          { id: `edge_${seed}_3`, source: riskId, target: approvalId },
-          { id: `edge_${seed}_4`, source: approvalId, target: alertId },
-          { id: `edge_${seed}_5`, source: approvalId, target: reportId },
-          { id: `edge_${seed}_6`, source: alertId, target: outputId },
-          { id: `edge_${seed}_7`, source: reportId, target: outputId }
-        ]
-      }
-    };
-
-    setConfig(nextConfig);
-    setActiveRepoId(nextConfig.id);
-    setSelectedWorkflowId(nextConfig.id);
-    setBuilderUnlocked(true);
-    setPageMode("builder");
-    setMode("flowchart");
-    setPublishedWorkflowId(null);
-    setPublishedVersion(null);
-    window.localStorage.setItem(repoDraftStorageKey(nextConfig.id), JSON.stringify(nextConfig));
-    setStatus("Embedded supplier-delay workflow loaded into Builder.");
-    setError(null);
-  }
-
   return (
     <div className="space-y-4">
       <section className="rounded border border-slate-200 bg-white p-4">
@@ -884,7 +854,7 @@ export function WorkflowsPage() {
                 </label>
               </div>
               <div className="mt-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                Repository preview: team-default/{newRepositoryName.trim() || "repo-name"}
+                Repository preview: {user?.teamId ?? "team"}/{newRepositoryName.trim() || "repo-name"}
               </div>
               <div className="mt-3 flex items-center gap-2">
                 <button className="rounded bg-slate-900 px-3 py-1 text-sm text-white" onClick={createRepositoryFromForm} type="button">
@@ -1041,32 +1011,6 @@ export function WorkflowsPage() {
               Double-click a workflow row to open Builder with that workflow selected.
             </p>
 
-            <div className="mt-6 rounded border border-orange-200 bg-orange-50 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h3 className="text-sm font-semibold text-orange-900">Embedded Internal Workflow</h3>
-                  <p className="text-xs text-orange-800">
-                    Use the guided enterprise flow below, then launch directly into the visual builder.
-                  </p>
-                </div>
-                <button
-                  className="rounded bg-orange-600 px-3 py-1 text-xs font-medium text-white hover:bg-orange-700"
-                  onClick={loadEmbeddedSupplierWorkflow}
-                  type="button"
-                >
-                  Load Supplier Workflow
-                </button>
-              </div>
-              <div className="mt-3 grid gap-2 md:grid-cols-5">
-                {EMBEDDED_WORKFLOW_STEPS.map((step, index) => (
-                  <div className="rounded border border-orange-200 bg-white p-2" key={step.title}>
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-orange-700">Step {index + 1}</div>
-                    <div className="text-xs font-semibold text-slate-800">{step.title}</div>
-                    <p className="mt-1 text-[11px] text-slate-600">{step.detail}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
           </section>
         </>
       ) : (

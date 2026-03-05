@@ -1,0 +1,84 @@
+{
+  "id": "wf_debate_multillm_demo",
+  "name": "Multi-LLM Debate Demo",
+  "description": "Debate Agent with 3 participants, 2 rounds, and arbiter synthesis.",
+  "agentType": "Ops/DevOps",
+  "llmProvider": "openai",
+  "llmModel": "gpt-4.1-mini",
+  "tools": [],
+  "graph": {
+    "nodes": [
+      {
+        "id": "start_1",
+        "type": "start",
+        "position": { "x": 60, "y": 220 },
+        "config": { "label": "Start" }
+      },
+      {
+        "id": "debate_1",
+        "type": "debate",
+        "position": { "x": 300, "y": 220 },
+        "config": {
+          "label": "Debate Mitigation Plan",
+          "agentName": "Debate Agent",
+          "debateTopic": "Should we approve the mitigation plan for supplier disruption case {{variables.caseId}}?",
+          "debateRounds": 2,
+          "outputSchemaVersion": "v1",
+          "requireJson": true,
+          "participants": [
+            { "id": "risk", "label": "Risk Analyst", "provider": "openai", "model": "gpt-4o-mini", "stance": "BLOCK" },
+            { "id": "cost", "label": "Cost Optimizer", "provider": "anthropic", "model": "claude-3-5-sonnet", "stance": "APPROVE" },
+            { "id": "ops", "label": "Ops Reliability", "provider": "gemini", "model": "gemini-1.5-pro", "stance": "CONDITIONAL" }
+          ],
+          "arbiter": {
+            "enabled": true,
+            "provider": "openai",
+            "model": "gpt-4o-mini"
+          }
+        }
+      },
+      {
+        "id": "router_1",
+        "type": "router",
+        "position": { "x": 560, "y": 220 },
+        "config": {
+          "label": "Debate Decision Router",
+          "routes": [
+            {
+              "label": "Approve Path",
+              "condition": "steps.debate_1.output.finalRecommendation.decision == \"APPROVE\"",
+              "toNodeId": "output_approve"
+            }
+          ],
+          "defaultRouteToNodeId": "output_review"
+        }
+      },
+      {
+        "id": "output_approve",
+        "type": "output",
+        "position": { "x": 820, "y": 150 },
+        "config": {
+          "label": "Approved Output",
+          "outputMode": "run_summary",
+          "messageTemplate": "# Approved\nDecision: {{steps.debate_1.output.finalRecommendation.decision}}"
+        }
+      },
+      {
+        "id": "output_review",
+        "type": "output",
+        "position": { "x": 820, "y": 290 },
+        "config": {
+          "label": "Review Output",
+          "outputMode": "run_summary",
+          "messageTemplate": "# Review Needed\nDecision: {{steps.debate_1.output.finalRecommendation.decision}}"
+        }
+      }
+    ],
+    "edges": [
+      { "id": "e1", "source": "start_1", "target": "debate_1" },
+      { "id": "e2", "source": "debate_1", "target": "router_1" },
+      { "id": "e3", "source": "router_1", "target": "output_approve" },
+      { "id": "e4", "source": "router_1", "target": "output_review" }
+    ]
+  }
+}

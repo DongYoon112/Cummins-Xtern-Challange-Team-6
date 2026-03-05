@@ -51,11 +51,8 @@ Result: Acme gets faster, more consistent operational decisions with human overs
   - `mcp-store` (run state + outputs)
   - `mcp-audit` (append-only decision logs)
 - SQLite persistence via `better-sqlite3`
-- Built-in templates seeded at startup:
-  - Backorder Resolution
-  - Supplier Risk Check
-- Seeded synthetic datasets:
-  - `inventory`, `suppliers`, `orders`, `shipping_rates`
+- No automatic workflow template seeding; repositories come from real backend writes.
+- No automatic synthetic inventory/supplier/order/rate seeding.
 
 ## Architecture (ASCII)
 
@@ -110,15 +107,14 @@ examples/
 5. Open web UI:
    - `http://localhost:5173`
 
-## Seed accounts
+## Bootstrap account
 
-All users are assigned to `team-default`.
+On a fresh database, the API creates one admin user from environment variables:
 
-- `admin / admin123` (`ADMIN`)
-- `builder / builder123` (`BUILDER`)
-- `operator / operator123` (`OPERATOR`)
-- `approver / approver123` (`APPROVER`)
-- `auditor / auditor123` (`AUDITOR`)
+- `BOOTSTRAP_ADMIN_USERNAME`
+- `BOOTSTRAP_ADMIN_PASSWORD`
+- `DEFAULT_TEAM_ID` (defaults to `team-main`)
+- `DEFAULT_TEAM_NAME` (defaults to `Primary Team`)
 
 ## Environment variables
 
@@ -127,10 +123,16 @@ See `.env.example`:
 - `MASTER_KEY` (required)
 - `JWT_SECRET`
 - `DB_PATH`
+- `BOOTSTRAP_ADMIN_USERNAME`, `BOOTSTRAP_ADMIN_PASSWORD`
+- `DEFAULT_TEAM_ID`, `DEFAULT_TEAM_NAME`
 - `API_PORT`, `WEB_PORT`, `MCP_REGISTRY_PORT`, `MCP_STORE_PORT`, `MCP_AUDIT_PORT`
 - `OPENAI_API_KEY` (optional)
 - `ANTHROPIC_API_KEY` (optional)
 - `GEMINI_API_KEY` (optional)
+- `DATABASE_URL` (optional but preferred for CMAPSS DB write step)
+- `CMAPSS_CACHE_DIR` (optional, default `./data/CMAPSS`)
+- `CMAPSS_DOWNLOAD_URL` (optional, default NASA legacy zip URL)
+- `CMAPSS_SQLITE_PATH` (optional sqlite fallback path for CMAPSS incident writes)
 
 ## MCP tools implemented
 
@@ -176,6 +178,30 @@ By `Policy/Governance Agent` and orchestration pipeline:
 6. Use `Audit Log` to inspect/export governance records.
 7. Open `Docs` for quick-start usage guidance.
 
+## CMAPSS demo workflow
+
+Starter graph is prefilled in new drafts:
+
+`Start -> Dataset Loader -> Feature Builder -> Debate -> Orchestrator -> DB Write -> Output`
+
+Defaults:
+- `dataset=FD001`
+- `unit_id=1`
+- `window=50`
+- loader `source=download` (auto-download + unzip once under `CMAPSS_CACHE_DIR`)
+- DB write target defaults to sqlite (`CMAPSS_SQLITE_PATH`) unless `db_target=postgres` and `DATABASE_URL` is set.
+
+Run:
+1. `pnpm dev`
+2. Create/publish the default CMAPSS draft in `Workflows`.
+3. Start a run.
+4. In `Run` page, verify step outputs:
+   - `Debate`: JSON with `primary_issue`, `confidence`, `hypotheses`, `recommended_actions`
+   - `Orchestrator`: `incident` object
+   - `DB Write`: `insert_id` and `status=inserted`
+
+All step outputs are persisted via existing `mcp-store` `write_output`.
+
 ## Sidebar UX additions
 
 - Hover any sidebar option to see a summary popup.
@@ -193,7 +219,7 @@ By `Policy/Governance Agent` and orchestration pipeline:
    - Core tools (multi-select) and tool-specific settings (API key/base URL/scopes/rate limits)
 3. Flowchart mode supports:
    - Node canvas with pan/zoom + grid
-   - Node types: `Start`, `LLM`, `Tool`, `Router`, `Memory`, `Output`
+   - Node types: `Start`, `LLM`, `Tool`, `Router`, `Memory`, `Debate`, `Dataset Loader`, `Feature Builder`, `DB Write`, `Output`
    - Edge creation via node handles
    - Right-side node config drawer
 4. Developer mode supports:

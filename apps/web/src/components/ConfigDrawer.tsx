@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   LLM_MODEL_OPTIONS,
   getDefaultModelForProvider,
@@ -29,6 +30,12 @@ function getNodeTitle(type: WorkflowNode["type"]) {
       return "Memory Node";
     case "debate":
       return "Multi-Agent Debate Node";
+    case "dataset_loader":
+      return "Dataset Loader Node";
+    case "feature_builder":
+      return "Feature Builder Node";
+    case "db_write":
+      return "DB Write Node";
     case "output":
       return "Output Node";
     default:
@@ -75,10 +82,30 @@ function getNodeDescriptionSummary(node: WorkflowNode, tools: WorkflowTool[]) {
     return "Runs a multi-agent debate to compare alternatives before selecting a recommendation.";
   }
 
+  if (node.type === "dataset_loader") {
+    return "Loads CMAPSS FD001 rows for a specific engine unit from local cache or download.";
+  }
+
+  if (node.type === "feature_builder") {
+    return "Builds rolling stats and sensor trend features from recent CMAPSS cycles.";
+  }
+
+  if (node.type === "db_write") {
+    return "Persists the orchestrated incident record into Postgres or SQLite.";
+  }
+
   return "Delivers the final workflow result to destination systems and user-facing views.";
 }
 
 export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode }: ConfigDrawerProps) {
+  const [participantsJsonError, setParticipantsJsonError] = useState<string | null>(null);
+  const [arbiterJsonError, setArbiterJsonError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setParticipantsJsonError(null);
+    setArbiterJsonError(null);
+  }, [node?.id]);
+
   if (!node) {
     return (
       <aside className="h-full rounded border border-slate-200 bg-white p-4 xl:overflow-auto">
@@ -117,9 +144,26 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
   const maxRows = String(node.config.maxRows ?? "100");
   const connectionString = String(node.config.connectionString ?? "");
   const debateTopic = String(node.config.debateTopic ?? "");
-  const debateRounds = String(node.config.debateRounds ?? "1");
+  const debateRounds = String(node.config.debateRounds ?? "2");
+  const debateAgentName =
+    typeof node.config.agentName === "string" && node.config.agentName.trim()
+      ? node.config.agentName
+      : "Debate Agent";
   const participants = Array.isArray(node.config.participants) ? node.config.participants : [];
-  const participantsRaw = JSON.stringify(participants);
+  const participantsRaw =
+    typeof node.config.participantsRaw === "string"
+      ? node.config.participantsRaw
+      : JSON.stringify(participants, null, 2);
+  const arbiter =
+    node.config.arbiter && typeof node.config.arbiter === "object"
+      ? (node.config.arbiter as Record<string, unknown>)
+      : {};
+  const arbiterRaw =
+    typeof node.config.arbiterRaw === "string" ? node.config.arbiterRaw : JSON.stringify(arbiter, null, 2);
+  const outputSchemaVersion = String(node.config.outputSchemaVersion ?? "v1");
+  const requireJson = node.config.requireJson !== false;
+  const debateMaxTokens = String(node.config.maxTokens ?? "");
+  const debateTemperature = String(node.config.temperature ?? "");
   const memoryMode = String(node.config.mode ?? "write");
   const memoryKey = String(node.config.key ?? "");
   const memoryValueRaw =
@@ -129,6 +173,14 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
   const messageTemplate = String(node.config.messageTemplate ?? "");
   const webhookUrl = String(node.config.webhookUrl ?? "");
   const includeContext = node.config.includeContext === true;
+  const dataset = String(node.config.dataset ?? "FD001");
+  const unitId = String(node.config.unit_id ?? "1");
+  const datasetWindow = String(node.config.window ?? "50");
+  const datasetSource = String(node.config.source ?? "local");
+  const cacheDir = String(node.config.cache_dir ?? "./data/CMAPSS");
+  const slopeWindow = String(node.config.slope_window ?? "10");
+  const dbTarget = String(node.config.db_target ?? "postgres");
+  const sqlitePath = String(node.config.sqlite_path ?? "./data/engine-incidents.db");
   const nodeDescriptionSummary = getNodeDescriptionSummary(node, tools);
 
   return (
@@ -518,6 +570,19 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
       {node.type === "debate" ? (
         <div className="space-y-2">
           <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Debate Agent</div>
+            <select
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, agentName: event.target.value } })
+              }
+              value={debateAgentName}
+            >
+              <option value="Debate Agent">Debate Agent (Multi-LLM)</option>
+              <option value="CMAPSS Debate Agent">CMAPSS Debate Agent</option>
+            </select>
+          </label>
+          <label className="block text-xs">
             <div className="mb-1 text-slate-600">Debate Topic / Question</div>
             <textarea
               className="w-full rounded border border-slate-300 px-2 py-1"
@@ -536,7 +601,7 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
               min={1}
               onChange={(event) =>
                 onUpdateNode(node.id, {
-                  config: { ...node.config, debateRounds: Math.max(1, Number(event.target.value) || 1) }
+                  config: { ...node.config, debateRounds: Math.max(1, Number(event.target.value) || 2) }
                 })
               }
               type="number"
@@ -544,26 +609,245 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
             />
           </label>
           <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Output Schema Version</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, outputSchemaVersion: event.target.value || "v1" } })
+              }
+              value={outputSchemaVersion}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-slate-700">
+            <input
+              checked={requireJson}
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, requireJson: event.target.checked } })
+              }
+              type="checkbox"
+            />
+            Require strict JSON output
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Max Tokens (optional)</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, {
+                  config: {
+                    ...node.config,
+                    maxTokens: event.target.value.trim() ? Math.max(1, Number(event.target.value) || 1) : undefined
+                  }
+                })
+              }
+              placeholder="1200"
+              type="number"
+              value={debateMaxTokens}
+            />
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Temperature (optional)</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, {
+                  config: {
+                    ...node.config,
+                    temperature: event.target.value.trim() ? Number(event.target.value) || 0 : undefined
+                  }
+                })
+              }
+              placeholder="0"
+              step="0.1"
+              type="number"
+              value={debateTemperature}
+            />
+          </label>
+          <label className="block text-xs">
             <div className="mb-1 text-slate-600">Participants JSON Array</div>
             <textarea
               className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-[11px]"
               onChange={(event) => {
-                let next: unknown[] = [];
+                const raw = event.target.value;
+                let next: unknown[] | null = null;
                 try {
-                  const parsed = JSON.parse(event.target.value) as unknown;
+                  const parsed = JSON.parse(raw) as unknown;
                   if (Array.isArray(parsed)) {
                     next = parsed;
+                  } else {
+                    setParticipantsJsonError("Participants JSON must be an array.");
                   }
                 } catch {
-                  next = [];
+                  setParticipantsJsonError("Participants JSON is invalid. Keeping raw text.");
                 }
-                onUpdateNode(node.id, { config: { ...node.config, participants: next } });
+                if (next) {
+                  setParticipantsJsonError(null);
+                }
+                onUpdateNode(node.id, {
+                  config: {
+                    ...node.config,
+                    participantsRaw: raw,
+                    ...(next ? { participants: next } : {})
+                  }
+                });
               }}
-              placeholder='[{"provider":"openai","model":"gpt-4.1-mini"},{"provider":"anthropic","model":"claude-3-5-haiku-latest"}]'
-              rows={4}
+              placeholder='[{"id":"risk","label":"Risk Analyst","provider":"openai","model":"gpt-4o-mini","stance":"BLOCK"}]'
+              rows={6}
               value={participantsRaw}
             />
+            {participantsJsonError ? <div className="mt-1 text-[11px] text-amber-700">{participantsJsonError}</div> : null}
           </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Arbiter JSON Object</div>
+            <textarea
+              className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-[11px]"
+              onChange={(event) => {
+                const raw = event.target.value;
+                let next: Record<string, unknown> | null = null;
+                try {
+                  const parsed = JSON.parse(raw) as unknown;
+                  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                    next = parsed as Record<string, unknown>;
+                  } else {
+                    setArbiterJsonError("Arbiter JSON must be an object.");
+                  }
+                } catch {
+                  setArbiterJsonError("Arbiter JSON is invalid. Keeping raw text.");
+                }
+                if (next) {
+                  setArbiterJsonError(null);
+                }
+                onUpdateNode(node.id, {
+                  config: {
+                    ...node.config,
+                    arbiterRaw: raw,
+                    ...(next ? { arbiter: next } : {})
+                  }
+                });
+              }}
+              placeholder='{"enabled":true,"provider":"openai","model":"gpt-4o-mini"}'
+              rows={4}
+              value={arbiterRaw}
+            />
+            {arbiterJsonError ? <div className="mt-1 text-[11px] text-amber-700">{arbiterJsonError}</div> : null}
+          </label>
+        </div>
+      ) : null}
+
+      {node.type === "dataset_loader" ? (
+        <div className="space-y-2">
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Dataset</div>
+            <select
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) => onUpdateNode(node.id, { config: { ...node.config, dataset: event.target.value } })}
+              value={dataset}
+            >
+              <option value="FD001">FD001</option>
+            </select>
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Unit ID</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              min={1}
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, unit_id: Math.max(1, Number(event.target.value) || 1) } })
+              }
+              type="number"
+              value={unitId}
+            />
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Window</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              min={5}
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, window: Math.max(5, Number(event.target.value) || 50) } })
+              }
+              type="number"
+              value={datasetWindow}
+            />
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Source</div>
+            <select
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) => onUpdateNode(node.id, { config: { ...node.config, source: event.target.value } })}
+              value={datasetSource}
+            >
+              <option value="local">local</option>
+              <option value="download">download</option>
+            </select>
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Cache Dir</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) => onUpdateNode(node.id, { config: { ...node.config, cache_dir: event.target.value } })}
+              value={cacheDir}
+            />
+          </label>
+        </div>
+      ) : null}
+
+      {node.type === "feature_builder" ? (
+        <div className="space-y-2">
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Window</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              min={5}
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, window: Math.max(5, Number(event.target.value) || 50) } })
+              }
+              type="number"
+              value={datasetWindow}
+            />
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Slope Window</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              min={3}
+              onChange={(event) =>
+                onUpdateNode(node.id, {
+                  config: { ...node.config, slope_window: Math.max(3, Number(event.target.value) || 10) }
+                })
+              }
+              type="number"
+              value={slopeWindow}
+            />
+          </label>
+        </div>
+      ) : null}
+
+      {node.type === "db_write" ? (
+        <div className="space-y-2">
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">DB Target</div>
+            <select
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) => onUpdateNode(node.id, { config: { ...node.config, db_target: event.target.value } })}
+              value={dbTarget}
+            >
+              <option value="postgres">postgres</option>
+              <option value="sqlite">sqlite</option>
+            </select>
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">SQLite Path (optional fallback)</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) => onUpdateNode(node.id, { config: { ...node.config, sqlite_path: event.target.value } })}
+              placeholder="./data/engine-incidents.db"
+              value={sqlitePath}
+            />
+          </label>
+          <div className="text-[11px] text-slate-500">
+            Uses <code>DATABASE_URL</code> for postgres and local file for sqlite.
+          </div>
         </div>
       ) : null}
 

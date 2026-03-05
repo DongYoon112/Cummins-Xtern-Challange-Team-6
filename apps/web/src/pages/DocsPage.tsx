@@ -34,7 +34,7 @@ export function DocsPage() {
               Run <code>pnpm dev</code> and open <code>http://localhost:5173</code>.
             </li>
             <li>
-              Sign in with <code>admin/admin123</code> for full access.
+              Sign in with your configured account credentials.
             </li>
             <li>
               Open <code>Workflows</code> and use <code>Dashboard</code> as your repository list.

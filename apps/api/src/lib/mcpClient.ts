@@ -31,6 +31,34 @@ function unpackResult(result: unknown) {
   }
 }
 
+function extractMcpError(result: unknown): string | null {
+  const maybe = result as {
+    isError?: unknown;
+    structuredContent?: unknown;
+    content?: Array<{ type?: string; text?: string }>;
+  };
+  if (maybe.isError !== true) {
+    return null;
+  }
+
+  if (maybe.structuredContent && typeof maybe.structuredContent === "object") {
+    const structured = maybe.structuredContent as { error?: unknown; message?: unknown };
+    if (typeof structured.error === "string" && structured.error.trim()) {
+      return structured.error.trim();
+    }
+    if (typeof structured.message === "string" && structured.message.trim()) {
+      return structured.message.trim();
+    }
+  }
+
+  const text = maybe.content?.find((entry) => entry.type === "text")?.text;
+  if (typeof text === "string" && text.trim()) {
+    return text.trim();
+  }
+
+  return "MCP tool call failed";
+}
+
 export async function callMcpTool<TArgs extends Record<string, unknown>, TResult>(
   serverName: McpServerName,
   toolName: string,
@@ -45,6 +73,10 @@ export async function callMcpTool<TArgs extends Record<string, unknown>, TResult
       name: toolName,
       arguments: args
     });
+    const mcpError = extractMcpError(result);
+    if (mcpError) {
+      throw new Error(mcpError);
+    }
     return unpackResult(result) as TResult;
   } finally {
     const maybeClient = client as unknown as { close?: () => Promise<void> | void };

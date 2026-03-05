@@ -1,8 +1,20 @@
-import { askProviderForJson } from "../lib/providers";
+import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import Database from "better-sqlite3";
+import * as providerClient from "../lib/providers";
 import type { ServerTeamSettings } from "../lib/settings";
 import { db } from "../lib/db";
 import { executeExternalQuery, executeReadOnlyExternalQuery } from "../lib/externalDb";
-import { DEFAULT_MODELS, type Provider } from "@agentfoundry/shared";
+import { buildCmapssFeatures, loadCmapssFd001 } from "../lib/cmapss";
+import {
+  DebateOutputSchema,
+  DEFAULT_MODELS,
+  type DebateNodeConfig,
+  type DebateStance,
+  type Provider
+} from "@agentfoundry/shared";
+import { resolveTemplates } from "../lib/template";
 
 type TaskResult = {
   output: Record<string, unknown>;
@@ -36,6 +48,19 @@ function isProvider(value: unknown): value is Provider {
   return value === "openai" || value === "anthropic" || value === "gemini";
 }
 
+function isDebateStance(value: unknown): value is DebateStance {
+  return value === "APPROVE" || value === "BLOCK" || value === "CONDITIONAL";
+}
+
+function sanitizeStringArray(input: unknown) {
+  if (!Array.isArray(input)) {
+    return [] as string[];
+  }
+  return input
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter(Boolean);
+}
+
 function renderPromptTemplate(template: string, runContext: Record<string, unknown>) {
   return template.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (_match, key) => {
     const raw = runContext[key];
@@ -51,6 +76,150 @@ function renderPromptTemplate(template: string, runContext: Record<string, unkno
     }
     return String(raw);
   });
+}
+
+function findStepOutputByPredicate(
+  runContext: Record<string, unknown>,
+  predicate: (output: Record<string, unknown>) => boolean
+) {
+  const steps = runContext.steps;
+  if (!steps || typeof steps !== "object") {
+    return null;
+  }
+  const values = Object.values(steps as Record<string, unknown>);
+  for (let idx = values.length - 1; idx >= 0; idx -= 1) {
+    const candidate = values[idx];
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+    const output = (candidate as { output?: unknown }).output;
+    if (!output || typeof output !== "object" || Array.isArray(output)) {
+      continue;
+    }
+    if (predicate(output as Record<string, unknown>)) {
+      return output as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+async function insertIncidentPostgres(input: {
+  connectionString: string;
+  incident: Record<string, unknown>;
+}) {
+  const moduleName = "pg";
+  const pg = (await import(moduleName)) as { Pool: new (args: Record<string, unknown>) => any };
+  const pool = new pg.Pool({ connectionString: input.connectionString, max: 2 });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS engine_incidents (
+        incident_id TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL,
+        dataset TEXT NOT NULL,
+        unit_id INTEGER NOT NULL,
+        primary_issue TEXT NOT NULL,
+        confidence DOUBLE PRECISION NOT NULL,
+        hypotheses_json JSONB NOT NULL,
+        recommended_actions_json JSONB NOT NULL,
+        top_anomalies_json JSONB NOT NULL,
+        raw_feature_summary_json JSONB NOT NULL
+      )
+    `);
+    await client.query(
+      `
+      INSERT INTO engine_incidents (
+        incident_id,
+        created_at,
+        dataset,
+        unit_id,
+        primary_issue,
+        confidence,
+        hypotheses_json,
+        recommended_actions_json,
+        top_anomalies_json,
+        raw_feature_summary_json
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb)
+      `,
+      [
+        String(input.incident.incident_id),
+        String(input.incident.created_at),
+        String(input.incident.dataset),
+        Number(input.incident.unit_id),
+        String(input.incident.primary_issue),
+        Number(input.incident.confidence),
+        JSON.stringify(input.incident.hypotheses_json ?? []),
+        JSON.stringify(input.incident.recommended_actions_json ?? []),
+        JSON.stringify(input.incident.top_anomalies_json ?? []),
+        JSON.stringify(input.incident.raw_feature_summary_json ?? {})
+      ]
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+    await pool.end();
+  }
+}
+
+function insertIncidentSqlite(input: {
+  sqlitePath: string;
+  incident: Record<string, unknown>;
+}) {
+  const filePath = path.resolve(input.sqlitePath);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const fileDb = new Database(filePath);
+  try {
+    fileDb.exec(`
+      CREATE TABLE IF NOT EXISTS engine_incidents (
+        incident_id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        dataset TEXT NOT NULL,
+        unit_id INTEGER NOT NULL,
+        primary_issue TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        hypotheses_json TEXT NOT NULL,
+        recommended_actions_json TEXT NOT NULL,
+        top_anomalies_json TEXT NOT NULL,
+        raw_feature_summary_json TEXT NOT NULL
+      )
+    `);
+    fileDb
+      .prepare(
+        `
+        INSERT INTO engine_incidents (
+          incident_id,
+          created_at,
+          dataset,
+          unit_id,
+          primary_issue,
+          confidence,
+          hypotheses_json,
+          recommended_actions_json,
+          top_anomalies_json,
+          raw_feature_summary_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+      )
+      .run(
+        String(input.incident.incident_id),
+        String(input.incident.created_at),
+        String(input.incident.dataset),
+        Number(input.incident.unit_id),
+        String(input.incident.primary_issue),
+        Number(input.incident.confidence),
+        JSON.stringify(input.incident.hypotheses_json ?? []),
+        JSON.stringify(input.incident.recommended_actions_json ?? []),
+        JSON.stringify(input.incident.top_anomalies_json ?? []),
+        JSON.stringify(input.incident.raw_feature_summary_json ?? {})
+      );
+  } finally {
+    fileDb.close();
+  }
 }
 
 async function maybeRefineWithLlm(
@@ -72,7 +241,7 @@ async function maybeRefineWithLlm(
     };
   }
 
-  const envelope = await askProviderForJson({
+  const envelope = await providerClient.askProviderForJson({
     provider,
     model,
     apiKey: key,
@@ -104,6 +273,315 @@ export async function runTaskAgent(params: {
 }): Promise<TaskResult> {
   const { agentName, stepParams, runContext, teamSettings } = params;
   const toolCalls: TaskResult["toolCalls"] = [];
+
+  if (agentName === "DatasetLoaderAgent") {
+    const dataset = String(stepParams.dataset ?? "FD001").toUpperCase();
+    if (dataset !== "FD001") {
+      throw new Error(`DatasetLoaderAgent currently supports FD001 only. Received: ${dataset}`);
+    }
+
+    const source = String(stepParams.source ?? "local").toLowerCase() === "download" ? "download" : "local";
+    const unitId = Math.max(1, Number(stepParams.unit_id ?? runContext.unit_id ?? 1) || 1);
+    const window = Math.max(5, Number(stepParams.window ?? runContext.window ?? 50) || 50);
+    const cacheDir = path.resolve(
+      String(stepParams.cache_dir ?? process.env.CMAPSS_CACHE_DIR ?? path.resolve(process.cwd(), "data", "CMAPSS"))
+    );
+
+    const loaded = await loadCmapssFd001({
+      unitId,
+      source,
+      cacheDir,
+      window
+    });
+
+    toolCalls.push({
+      server: "local-dataset",
+      tool: source === "download" ? "download+parse_fd001" : "parse_fd001",
+      args: {
+        dataset,
+        unit_id: unitId,
+        source,
+        cache_dir: cacheDir,
+        row_count: loaded.engine_rows.length
+      }
+    });
+
+    return {
+      output: loaded,
+      confidence: 0.95,
+      rationale: `Loaded ${loaded.engine_rows.length} rows for unit ${unitId} from ${source} CMAPSS FD001 source.`,
+      toolCalls,
+      mockMode: false
+    };
+  }
+
+  if (agentName === "FeatureBuilderAgent") {
+    const priorRows =
+      (Array.isArray(stepParams.engine_rows) ? stepParams.engine_rows : null) ??
+      (Array.isArray((runContext.lastOutput as { engine_rows?: unknown[] } | undefined)?.engine_rows)
+        ? ((runContext.lastOutput as { engine_rows?: unknown[] }).engine_rows ?? [])
+        : []);
+    if (!Array.isArray(priorRows) || priorRows.length === 0) {
+      throw new Error("FeatureBuilderAgent requires engine_rows from DatasetLoaderAgent.");
+    }
+
+    const window = Math.max(5, Number(stepParams.window ?? 50) || 50);
+    const slopeWindow = Math.max(3, Number(stepParams.slope_window ?? 10) || 10);
+    const built = buildCmapssFeatures({
+      engineRows: priorRows as Array<Record<string, unknown>>,
+      window,
+      slopeWindow
+    });
+
+    toolCalls.push({
+      server: "feature-builder",
+      tool: "window_stats",
+      args: {
+        row_count: priorRows.length,
+        window,
+        slope_window: slopeWindow
+      }
+    });
+
+    return {
+      output: built,
+      confidence: 0.93,
+      rationale: `Computed ${built.top_anomalies.length} top anomalies and per-sensor trend stats.`,
+      toolCalls,
+      mockMode: false
+    };
+  }
+
+  if (agentName === "CMAPSS Debate Agent") {
+    const featuresOutput =
+      findStepOutputByPredicate(runContext, (output) => "engine_features" in output) ??
+      ((runContext.lastOutput && typeof runContext.lastOutput === "object" && "engine_features" in (runContext.lastOutput as Record<string, unknown>)
+        ? (runContext.lastOutput as Record<string, unknown>)
+        : null) as Record<string, unknown> | null);
+    const loaderOutput = findStepOutputByPredicate(runContext, (output) => "dataset_meta" in output);
+
+    const topAnomalies = Array.isArray(featuresOutput?.top_anomalies) ? featuresOutput.top_anomalies : [];
+    const featureSummary =
+      (featuresOutput?.engine_features && typeof featuresOutput.engine_features === "object"
+        ? featuresOutput.engine_features
+        : {}) as Record<string, unknown>;
+    const datasetMeta =
+      (loaderOutput?.dataset_meta && typeof loaderOutput.dataset_meta === "object"
+        ? loaderOutput.dataset_meta
+        : {}) as Record<string, unknown>;
+
+    const provider = teamSettings.defaultProvider;
+    const model = teamSettings.defaultModel;
+    const apiKey = teamSettings.keys[provider];
+    if (!apiKey) {
+      const fallback = {
+        primary_issue: "Sensor drift pattern indicates progressive degradation.",
+        confidence: 0.61,
+        hypotheses: [
+          {
+            label: "Compressor efficiency loss",
+            rationale: "Top anomaly sensors show monotonic trend and elevated z-score.",
+            evidence_sensors: (topAnomalies as Array<{ sensor?: string }>).map((entry) => entry.sensor).filter(Boolean)
+          }
+        ],
+        recommended_actions: [
+          "Schedule maintenance inspection for the unit.",
+          "Increase monitoring frequency for next 20 cycles."
+        ],
+        transcript_summary: "Deterministic fallback debate used due to missing provider key."
+      };
+      return {
+        output: fallback,
+        confidence: fallback.confidence,
+        rationale: "CMAPSS debate fallback used because provider key is not configured.",
+        toolCalls,
+        mockMode: true
+      };
+    }
+
+    const envelope = await providerClient.askProviderForJson({
+      provider,
+      model,
+      apiKey,
+      prompt: [
+        "You are a CMAPSS turbofan diagnostics panel.",
+        "Return strict JSON keys only:",
+        "primary_issue (string), confidence (0..1 number), hypotheses (array of {label,rationale,evidence_sensors}), recommended_actions (array of strings), transcript_summary (string).",
+        `Dataset meta: ${JSON.stringify(datasetMeta)}`,
+        `Feature summary: ${JSON.stringify({
+          window: featureSummary.window,
+          slope_window: featureSummary.slope_window,
+          cycle_start: featureSummary.cycle_start,
+          cycle_end: featureSummary.cycle_end
+        })}`,
+        `Top anomalies: ${JSON.stringify(topAnomalies)}`
+      ].join("\n")
+    });
+
+    toolCalls.push({
+      server: provider,
+      tool: "chat.completions",
+      args: { model, mode: "cmapss_debate" }
+    });
+
+    if (!envelope) {
+      const fallback = {
+        primary_issue: "Sensor trend divergence requires maintenance review.",
+        confidence: 0.58,
+        hypotheses: [
+          {
+            label: "Provider unavailable, deterministic diagnostic fallback",
+            rationale: "Feature anomaly summary indicates non-stationary sensor behavior.",
+            evidence_sensors: (topAnomalies as Array<{ sensor?: string }>).map((entry) => entry.sensor).filter(Boolean)
+          }
+        ],
+        recommended_actions: [
+          "Queue manual review for this engine incident.",
+          "Re-run debate after provider connectivity is restored."
+        ],
+        transcript_summary: "Debate fallback used because provider call returned no envelope."
+      };
+      return {
+        output: fallback,
+        confidence: fallback.confidence,
+        rationale: "CMAPSS debate fallback used because provider call returned no envelope.",
+        toolCalls,
+        mockMode: true
+      };
+    }
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(envelope.summary) as Record<string, unknown>;
+    } catch {
+      parsed = null;
+    }
+
+    const output =
+      parsed && typeof parsed === "object"
+        ? {
+            primary_issue: String(parsed.primary_issue ?? envelope.summary),
+            confidence: clamp(toNumber(parsed.confidence, envelope.confidence)),
+            hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
+            recommended_actions: Array.isArray(parsed.recommended_actions) ? parsed.recommended_actions : [],
+            transcript_summary: String(parsed.transcript_summary ?? envelope.rationale)
+          }
+        : {
+            primary_issue: envelope.summary,
+            confidence: clamp(envelope.confidence),
+            hypotheses: [],
+            recommended_actions: [],
+            transcript_summary: envelope.rationale
+          };
+
+    return {
+      output,
+      confidence: clamp(toNumber(output.confidence, envelope.confidence)),
+      rationale: envelope.rationale,
+      toolCalls,
+      mockMode: false
+    };
+  }
+
+  if (agentName === "Incident Orchestrator Agent") {
+    const debateOutput =
+      (runContext.lastOutput && typeof runContext.lastOutput === "object" ? (runContext.lastOutput as Record<string, unknown>) : null) ??
+      findStepOutputByPredicate(runContext, (output) => "primary_issue" in output);
+    const featuresOutput = findStepOutputByPredicate(runContext, (output) => "engine_features" in output);
+    const loaderOutput = findStepOutputByPredicate(runContext, (output) => "dataset_meta" in output);
+
+    const meta =
+      (loaderOutput?.dataset_meta && typeof loaderOutput.dataset_meta === "object"
+        ? loaderOutput.dataset_meta
+        : {}) as Record<string, unknown>;
+    const incident = {
+      incident_id: randomUUID(),
+      created_at: new Date().toISOString(),
+      dataset: String(meta.dataset ?? stepParams.dataset ?? "FD001"),
+      unit_id: Number(meta.unit_id ?? stepParams.unit_id ?? runContext.unit_id ?? 1),
+      primary_issue: String(debateOutput?.primary_issue ?? "Unknown issue"),
+      confidence: clamp(toNumber(debateOutput?.confidence, 0.5)),
+      hypotheses_json: Array.isArray(debateOutput?.hypotheses) ? debateOutput?.hypotheses : [],
+      recommended_actions_json: Array.isArray(debateOutput?.recommended_actions) ? debateOutput?.recommended_actions : [],
+      top_anomalies_json: Array.isArray(featuresOutput?.top_anomalies) ? featuresOutput.top_anomalies : [],
+      raw_feature_summary_json:
+        featuresOutput && typeof featuresOutput.engine_features === "object" ? featuresOutput.engine_features : {}
+    };
+
+    return {
+      output: { incident },
+      confidence: clamp(toNumber(incident.confidence, 0.5)),
+      rationale: "Built normalized incident payload from CMAPSS feature and debate outputs.",
+      toolCalls,
+      mockMode: false
+    };
+  }
+
+  if (agentName === "DbWriteAgent") {
+    const incidentCandidate =
+      (stepParams.incident && typeof stepParams.incident === "object"
+        ? (stepParams.incident as Record<string, unknown>)
+        : null) ??
+      ((runContext.lastOutput && typeof runContext.lastOutput === "object" && typeof (runContext.lastOutput as Record<string, unknown>).incident === "object"
+        ? ((runContext.lastOutput as Record<string, unknown>).incident as Record<string, unknown>)
+        : null) as Record<string, unknown> | null);
+    if (!incidentCandidate) {
+      throw new Error("DbWriteAgent requires incident payload from Incident Orchestrator Agent.");
+    }
+
+    const target = String(stepParams.db_target ?? (process.env.DATABASE_URL ? "postgres" : "sqlite")).toLowerCase();
+    if (target === "postgres") {
+      const connectionString = String(stepParams.connectionString ?? process.env.DATABASE_URL ?? "").trim();
+      if (!connectionString) {
+        throw new Error("DbWriteAgent target=postgres requires DATABASE_URL or step connectionString.");
+      }
+      await insertIncidentPostgres({ connectionString, incident: incidentCandidate });
+      toolCalls.push({
+        server: "postgres",
+        tool: "insert_engine_incident",
+        args: { incident_id: incidentCandidate.incident_id }
+      });
+      return {
+        output: {
+          status: "inserted",
+          db_target: "postgres",
+          insert_id: String(incidentCandidate.incident_id),
+          incident_id: String(incidentCandidate.incident_id),
+          table: "engine_incidents"
+        },
+        confidence: 0.97,
+        rationale: "Incident inserted into Postgres engine_incidents table.",
+        toolCalls,
+        mockMode: false
+      };
+    }
+
+    const sqlitePath = String(
+      stepParams.sqlite_path ??
+        process.env.CMAPSS_SQLITE_PATH ??
+        path.resolve(process.cwd(), "data", "engine-incidents.db")
+    );
+    insertIncidentSqlite({ sqlitePath, incident: incidentCandidate });
+    toolCalls.push({
+      server: "sqlite",
+      tool: "insert_engine_incident",
+      args: { sqlite_path: sqlitePath, incident_id: incidentCandidate.incident_id }
+    });
+    return {
+      output: {
+        status: "inserted",
+        db_target: "sqlite",
+        sqlite_path: sqlitePath,
+        insert_id: String(incidentCandidate.incident_id),
+        incident_id: String(incidentCandidate.incident_id),
+        table: "engine_incidents"
+      },
+      confidence: 0.96,
+      rationale: "Incident inserted into SQLite engine_incidents table.",
+      toolCalls,
+      mockMode: false
+    };
+  }
 
   if (agentName === "LLM Agent") {
     const databaseMode =
@@ -209,7 +687,7 @@ export async function runTaskAgent(params: {
       };
     }
 
-    const envelope = await askProviderForJson({
+    const envelope = await providerClient.askProviderForJson({
       provider,
       model,
       apiKey,
@@ -542,174 +1020,394 @@ export async function runTaskAgent(params: {
   }
 
   if (agentName === "Debate Agent") {
-    const rawParticipants = Array.isArray(stepParams.participants) ? stepParams.participants : [];
-    const participants = rawParticipants
-      .map((entry) => (typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {}))
-      .map((entry) => {
-        const provider = String(entry.provider ?? "").toLowerCase();
-        if (provider !== "openai" && provider !== "anthropic" && provider !== "gemini") {
-          return null;
-        }
-        const p = provider as Provider;
-        const model = String(entry.model ?? DEFAULT_MODELS[p]);
-        const stance = typeof entry.stance === "string" ? entry.stance : "";
-        return { provider: p, model, stance };
-      })
-      .filter((item): item is { provider: Provider; model: string; stance: string } => Boolean(item));
-
-    const debateParticipants =
-      participants.length > 0
-        ? participants
-        : (["openai", "anthropic", "gemini"] as Provider[]).map((provider) => ({
-            provider,
-            model: teamSettings.defaultProvider === provider ? teamSettings.defaultModel : DEFAULT_MODELS[provider],
-            stance: ""
-          }));
-
-    const topic = String(
-      stepParams.debateTopic ??
+    const warnings: string[] = [];
+    const debateConfig = stepParams as DebateNodeConfig & { arbiter?: Record<string, unknown> };
+    const topicTemplate = String(
+      debateConfig.debateTopic ??
         stepParams.prompt ??
         runContext.lastSummary ??
         runContext.orderId ??
         "Evaluate options and produce a final recommendation."
     );
-    const rounds = Math.max(1, Number(stepParams.debateRounds ?? 1) || 1);
+    const resolvedTopic = resolveTemplates(topicTemplate, runContext);
+    warnings.push(...resolvedTopic.warnings.map((warning) => `topic: ${warning}`));
+    const topic = String(resolvedTopic.value ?? topicTemplate);
+    const rounds = Math.max(1, Number(debateConfig.debateRounds ?? 2) || 2);
+    const outputSchemaVersion = debateConfig.outputSchemaVersion === "v1" ? "v1" : "v1";
+    const requireJson = debateConfig.requireJson !== false;
+    const maxTokens = Number.isFinite(Number(debateConfig.maxTokens)) ? Number(debateConfig.maxTokens) : undefined;
+    const temperature = Number.isFinite(Number(debateConfig.temperature))
+      ? Number(debateConfig.temperature)
+      : undefined;
 
-    const argumentsByModel: Array<{
-      provider: Provider;
-      model: string;
-      stance?: string;
+    const defaultParticipants = [
+      {
+        id: "risk",
+        label: "Risk Analyst",
+        provider: "openai" as Provider,
+        model: teamSettings.defaultProvider === "openai" ? teamSettings.defaultModel : DEFAULT_MODELS.openai,
+        stance: "BLOCK" as DebateStance,
+        systemPrompt: "You are a risk analyst focused on downside prevention and safety controls.",
+        weight: 1
+      },
+      {
+        id: "cost",
+        label: "Cost Optimizer",
+        provider: "anthropic" as Provider,
+        model: teamSettings.defaultProvider === "anthropic" ? teamSettings.defaultModel : DEFAULT_MODELS.anthropic,
+        stance: "APPROVE" as DebateStance,
+        systemPrompt: "You are a cost optimizer focused on speed and budget efficiency.",
+        weight: 1
+      },
+      {
+        id: "ops",
+        label: "Ops Reliability",
+        provider: "gemini" as Provider,
+        model: teamSettings.defaultProvider === "gemini" ? teamSettings.defaultModel : DEFAULT_MODELS.gemini,
+        stance: "CONDITIONAL" as DebateStance,
+        systemPrompt: "You are an operations reliability lead balancing uptime and execution constraints.",
+        weight: 1
+      }
+    ];
+
+    const configuredParticipants = Array.isArray(debateConfig.participants)
+      ? debateConfig.participants
+          .map((entry) => (entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null))
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+          .map((entry, index) => {
+            const provider = String(entry.provider ?? "").toLowerCase();
+            if (!isProvider(provider)) {
+              warnings.push(`participants[${index}] ignored: unsupported provider "${provider}".`);
+              return null;
+            }
+            const stance = String(entry.stance ?? "").toUpperCase();
+            if (!isDebateStance(stance)) {
+              warnings.push(`participants[${index}] ignored: unsupported stance "${stance}".`);
+              return null;
+            }
+            const id = String(entry.id ?? `participant_${index + 1}`).trim() || `participant_${index + 1}`;
+            const label = String(entry.label ?? id).trim() || id;
+            const model = String(
+              entry.model ??
+                (teamSettings.defaultProvider === provider ? teamSettings.defaultModel : DEFAULT_MODELS[provider])
+            ).trim();
+            const weight = Math.max(0.1, Number(entry.weight ?? 1) || 1);
+            const systemPrompt = typeof entry.systemPrompt === "string" ? entry.systemPrompt : "";
+            return {
+              id,
+              label,
+              provider,
+              model,
+              stance,
+              weight,
+              systemPrompt
+            };
+          })
+          .filter(
+            (
+              item
+            ): item is {
+              id: string;
+              label: string;
+              provider: Provider;
+              model: string;
+              stance: DebateStance;
+              weight: number;
+              systemPrompt: string;
+            } => Boolean(item)
+          )
+      : [];
+
+    const debateParticipants = configuredParticipants.length > 0 ? configuredParticipants : defaultParticipants;
+    const participantMap = new Map(debateParticipants.map((participant) => [participant.id, participant]));
+    const debateArguments: Array<{
+      round: number;
+      participantId: string;
+      stance: DebateStance;
       summary: string;
-      rationale: string;
+      keyPoints: string[];
+      risks: string[];
+      mitigations: string[];
       confidence: number;
-      mockMode: boolean;
+      raw?: string;
     }> = [];
+    let usedFallback = false;
 
     for (let round = 1; round <= rounds; round += 1) {
+      const priorRoundSummaries =
+        round <= 1
+          ? "No prior arguments."
+          : debateArguments
+              .filter((entry) => entry.round === round - 1)
+              .map(
+                (entry) =>
+                  `${entry.participantId} (${entry.stance}) conf=${entry.confidence.toFixed(2)} summary=${entry.summary} risks=${entry.risks.join(
+                    "; "
+                  )} mitigations=${entry.mitigations.join("; ")}`
+              )
+              .join("\n");
+
       for (const participant of debateParticipants) {
-        const key = teamSettings.keys[participant.provider];
-        const participantLabel = `${participant.provider}/${participant.model}`;
-        if (!key) {
-          argumentsByModel.push({
-            provider: participant.provider,
-            model: participant.model,
-            stance: participant.stance || undefined,
-            summary: `(${participantLabel}) mock stance: ${participant.stance || "balanced"} on "${topic}"`,
-            rationale: "No provider key configured. Used deterministic mock argument.",
-            confidence: 0.55,
-            mockMode: true
-          });
-          continue;
-        }
+        const fallbackArgument = {
+          role: participant.label,
+          stance: participant.stance,
+          argument: {
+            summary: `${participant.label} (${participant.stance}) fallback for topic "${topic}".`,
+            key_points: [
+              `Fallback argument generated for ${participant.id}.`,
+              "Provider unavailable or invalid JSON response."
+            ],
+            risks: ["Potential model/provider outage during demo run."],
+            mitigations: ["Use deterministic fallback output and continue workflow."]
+          },
+          evidence: [],
+          confidence: 0.56
+        };
 
-        const priorArguments =
-          argumentsByModel.length === 0
-            ? "No prior arguments."
-            : argumentsByModel
-                .slice(-Math.max(0, debateParticipants.length))
-                .map((arg) => `${arg.provider}/${arg.model}: ${arg.summary}`)
-                .join("\n");
+        const roundSystemPromptTemplate =
+          participant.systemPrompt ||
+          `You are ${participant.label}. Keep stance ${participant.stance}. Provide concise enterprise decision support.`;
+        const resolvedSystemPrompt = resolveTemplates(roundSystemPromptTemplate, runContext);
+        warnings.push(
+          ...resolvedSystemPrompt.warnings.map((warning) => `${participant.id} systemPrompt: ${warning}`)
+        );
+        const roundSystemPrompt = String(resolvedSystemPrompt.value ?? roundSystemPromptTemplate);
 
-        const envelope = await askProviderForJson({
+        const roundPrompt = [
+          `Topic: ${topic}`,
+          `Round: ${round}`,
+          `Participant: ${participant.label} (${participant.id})`,
+          `Required stance: ${participant.stance}`,
+          round > 1 ? `Prior round summaries:\n${priorRoundSummaries}` : "Prior round summaries: none",
+          "Return strict JSON:",
+          "{",
+          '  "role": "string",',
+          '  "stance": "APPROVE|BLOCK|CONDITIONAL",',
+          '  "argument": {',
+          '    "summary": "string",',
+          '    "key_points": ["string"],',
+          '    "risks": ["string"],',
+          '    "mitigations": ["string"]',
+          "  },",
+          '  "evidence": ["string"],',
+          '  "confidence": 0.0',
+          "}"
+        ].join("\n");
+
+        const strict = await providerClient.askProviderForStrictJson({
           provider: participant.provider,
           model: participant.model,
-          apiKey: key,
-          prompt: [
-            `Debate topic: ${topic}`,
-            `Round: ${round}`,
-            participant.stance ? `Preferred stance: ${participant.stance}` : "Preferred stance: balanced",
-            `Run context: ${JSON.stringify(runContext).slice(0, 1500)}`,
-            `Previous arguments:\n${priorArguments}`,
-            "Provide your concise argument."
-          ].join("\n")
+          apiKey: teamSettings.keys[participant.provider],
+          systemPrompt: roundSystemPrompt,
+          userPrompt: roundPrompt,
+          jsonSchemaHint:
+            "Must be valid JSON object with role, stance, argument{summary,key_points,risks,mitigations}, evidence[], confidence.",
+          maxTokens,
+          temperature,
+          fallback: fallbackArgument
         });
+        usedFallback = usedFallback || strict.usedFallback;
+        warnings.push(...strict.warnings.map((warning) => `${participant.id}: ${warning}`));
 
-        if (!envelope) {
-          argumentsByModel.push({
-            provider: participant.provider,
-            model: participant.model,
-            stance: participant.stance || undefined,
-            summary: `(${participantLabel}) failed to generate argument; fallback argument applied.`,
-            rationale: "Provider call failed.",
-            confidence: 0.5,
-            mockMode: false
-          });
-          continue;
+        const response = strict.value;
+        const responseArgument =
+          response.argument && typeof response.argument === "object"
+            ? (response.argument as Record<string, unknown>)
+            : {};
+        const responseStance = String(response.stance ?? participant.stance).toUpperCase();
+        const normalizedStance = isDebateStance(responseStance) ? responseStance : participant.stance;
+        if (responseStance !== normalizedStance) {
+          warnings.push(`${participant.id}: stance normalized to ${normalizedStance}.`);
         }
 
-        argumentsByModel.push({
-          provider: participant.provider,
-          model: participant.model,
-          stance: participant.stance || undefined,
-          summary: envelope.summary,
-          rationale: envelope.rationale,
-          confidence: envelope.confidence,
-          mockMode: false
+        const summary = String(
+          responseArgument.summary ??
+            response.summary ??
+            `${participant.label} recommends ${normalizedStance} for "${topic}".`
+        );
+        const keyPoints = sanitizeStringArray(responseArgument.key_points ?? responseArgument.keyPoints);
+        const risks = sanitizeStringArray(responseArgument.risks);
+        const mitigations = sanitizeStringArray(responseArgument.mitigations);
+        const confidence = clamp(toNumber(response.confidence, 0.56));
+
+        debateArguments.push({
+          round,
+          participantId: participant.id,
+          stance: normalizedStance,
+          summary,
+          keyPoints,
+          risks,
+          mitigations,
+          confidence,
+          raw: requireJson ? undefined : JSON.stringify(response)
         });
       }
     }
 
-    const best = argumentsByModel.reduce(
-      (current, candidate) => (candidate.confidence > current.confidence ? candidate : current),
-      argumentsByModel[0]
+    const finalRoundArguments = debateArguments.filter((entry) => entry.round === rounds);
+    const scoreSource = finalRoundArguments.length > 0 ? finalRoundArguments : debateArguments;
+    const scored = scoreSource.map((entry) => {
+      const participant = participantMap.get(entry.participantId);
+      const weight = participant?.weight ?? 1;
+      return {
+        entry,
+        score: clamp(entry.confidence) * Math.max(0.1, weight)
+      };
+    });
+    const bestScored = scored.reduce(
+      (current, candidate) => (candidate.score > current.score ? candidate : current),
+      scored[0]
     );
+    const bestArgument = bestScored?.entry ?? {
+      round: rounds,
+      participantId: "fallback",
+      stance: "CONDITIONAL" as DebateStance,
+      summary: "No arguments generated.",
+      keyPoints: [],
+      risks: [],
+      mitigations: [],
+      confidence: 0.5
+    };
 
-    const arbiterProvider = teamSettings.defaultProvider;
-    const arbiterModel = teamSettings.defaultModel;
-    const arbiterKey = teamSettings.keys[arbiterProvider];
+    const bestRecommendation = {
+      decision: bestArgument.stance,
+      confidence: clamp(bestArgument.confidence),
+      rationale: `${bestArgument.summary}${bestArgument.keyPoints.length ? ` Key points: ${bestArgument.keyPoints.join("; ")}` : ""}`,
+      conditions:
+        bestArgument.stance === "CONDITIONAL"
+          ? bestArgument.mitigations.length > 0
+            ? bestArgument.mitigations
+            : ["Proceed only after additional safeguards are confirmed."]
+          : [],
+      nextActions:
+        bestArgument.mitigations.length > 0
+          ? bestArgument.mitigations
+          : ["Log debate result and route to operator review."]
+    };
 
-    let finalRecommendation = best?.summary ?? "No recommendation.";
-    let finalRationale = best?.rationale ?? "No arguments generated.";
-    let finalConfidence = best?.confidence ?? 0.5;
-    let synthesisMode: "llm" | "fallback" = "fallback";
+    const arbiterConfig =
+      debateConfig.arbiter && typeof debateConfig.arbiter === "object"
+        ? (debateConfig.arbiter as Record<string, unknown>)
+        : {};
+    const arbiterEnabled = arbiterConfig.enabled !== false;
+    const providerOrder: Provider[] = ["openai", "anthropic", "gemini"];
+    const firstAvailableProvider = providerOrder.find((provider) => Boolean(teamSettings.keys[provider]));
+    const arbiterProviderRaw = String(arbiterConfig.provider ?? firstAvailableProvider ?? teamSettings.defaultProvider).toLowerCase();
+    const arbiterProvider = isProvider(arbiterProviderRaw) ? arbiterProviderRaw : teamSettings.defaultProvider;
+    const arbiterModel = String(
+      arbiterConfig.model ??
+        (teamSettings.defaultProvider === arbiterProvider ? teamSettings.defaultModel : DEFAULT_MODELS[arbiterProvider])
+    );
+    const arbiterSystemTemplate =
+      typeof arbiterConfig.systemPrompt === "string" && arbiterConfig.systemPrompt.trim()
+        ? arbiterConfig.systemPrompt
+        : "You are the final arbiter. Synthesize participant arguments into a final recommendation.";
+    const resolvedArbiterSystem = resolveTemplates(arbiterSystemTemplate, runContext);
+    warnings.push(...resolvedArbiterSystem.warnings.map((warning) => `arbiter: ${warning}`));
 
-    if (arbiterKey && argumentsByModel.length > 0) {
-      const synthesis = await askProviderForJson({
+    let synthesisMode: "best_argument" | "arbiter" = "best_argument";
+    let finalRecommendation = bestRecommendation;
+
+    if (arbiterEnabled && scoreSource.length > 0) {
+      const arbiterFallback = {
+        decision: bestRecommendation.decision,
+        confidence: bestRecommendation.confidence,
+        rationale: bestRecommendation.rationale,
+        conditions: bestRecommendation.conditions,
+        nextActions: bestRecommendation.nextActions
+      };
+
+      const arbiter = await providerClient.askProviderForStrictJson({
         provider: arbiterProvider,
         model: arbiterModel,
-        apiKey: arbiterKey,
-        prompt: [
-          `You are the final arbiter for a multi-model debate.`,
+        apiKey: teamSettings.keys[arbiterProvider],
+        systemPrompt: String(resolvedArbiterSystem.value ?? arbiterSystemTemplate),
+        userPrompt: [
           `Topic: ${topic}`,
-          `Arguments:`,
-          ...argumentsByModel.map(
-            (arg, index) =>
-              `${index + 1}. ${arg.provider}/${arg.model} [conf ${arg.confidence.toFixed(2)}]: ${arg.summary}`
-          ),
-          "Return final recommendation and rationale."
-        ].join("\n")
+          "Participant summaries from final round:",
+          ...scoreSource.map((entry) => {
+            const participant = participantMap.get(entry.participantId);
+            return `- ${entry.participantId} (${participant?.label ?? "unknown"}, ${entry.stance}, conf ${entry.confidence.toFixed(
+              2
+            )}): ${entry.summary} | risks=${entry.risks.join("; ")} | mitigations=${entry.mitigations.join("; ")}`;
+          }),
+          "Return strict JSON:",
+          "{",
+          '  "decision": "APPROVE|BLOCK|CONDITIONAL",',
+          '  "confidence": 0.0,',
+          '  "rationale": "string",',
+          '  "conditions": ["string"],',
+          '  "nextActions": ["string"]',
+          "}"
+        ].join("\n"),
+        jsonSchemaHint: "Final recommendation object with decision, confidence, rationale, conditions[], nextActions[].",
+        maxTokens,
+        temperature,
+        fallback: arbiterFallback
       });
+      usedFallback = usedFallback || arbiter.usedFallback;
+      warnings.push(...arbiter.warnings.map((warning) => `arbiter: ${warning}`));
 
-      if (synthesis) {
-        finalRecommendation = synthesis.summary;
-        finalRationale = synthesis.rationale;
-        finalConfidence = Math.max(finalConfidence, synthesis.confidence);
-        synthesisMode = "llm";
+      if (!arbiter.usedFallback) {
+        const rec = arbiter.value;
+        const decisionRaw = String(rec.decision ?? bestRecommendation.decision).toUpperCase();
+        const decision = isDebateStance(decisionRaw) ? decisionRaw : bestRecommendation.decision;
+        const conditions = sanitizeStringArray(rec.conditions);
+        finalRecommendation = {
+          decision,
+          confidence: clamp(toNumber(rec.confidence, bestRecommendation.confidence)),
+          rationale: String(rec.rationale ?? bestRecommendation.rationale),
+          conditions:
+            decision === "CONDITIONAL"
+              ? conditions.length > 0
+                ? conditions
+                : ["Proceed with explicit approval gates and monitoring."]
+              : [],
+          nextActions: sanitizeStringArray(rec.nextActions).length
+            ? sanitizeStringArray(rec.nextActions)
+            : bestRecommendation.nextActions
+        };
+        synthesisMode = "arbiter";
       }
     }
+
+    const output = DebateOutputSchema.parse({
+      schemaVersion: outputSchemaVersion,
+      topic,
+      rounds,
+      participants: debateParticipants.map((participant) => ({
+        id: participant.id,
+        label: participant.label,
+        provider: participant.provider,
+        model: participant.model,
+        stance: participant.stance
+      })),
+      arguments: debateArguments,
+      finalRecommendation,
+      synthesisMode,
+      meta: {
+        warnings
+      }
+    });
 
     toolCalls.push({
       server: "multi-model",
       tool: "debate",
       args: {
         rounds,
-        participants: debateParticipants.map((item) => `${item.provider}/${item.model}`)
+        participants: debateParticipants.map((item) => `${item.id}:${item.provider}/${item.model}`),
+        arbiterEnabled,
+        arbiterProvider,
+        synthesisMode
       }
     });
 
     return {
-      output: {
-        topic,
-        rounds,
-        participants: debateParticipants,
-        arguments: argumentsByModel,
-        finalRecommendation,
-        synthesisMode
-      },
-      confidence: clamp(finalConfidence),
-      rationale: finalRationale,
+      output,
+      confidence: clamp(output.finalRecommendation.confidence),
+      rationale: output.finalRecommendation.rationale,
       toolCalls,
-      mockMode: argumentsByModel.every((item) => item.mockMode)
+      mockMode: usedFallback
     };
   }
 

@@ -102,7 +102,7 @@ export function HomePage() {
         <article className="rounded border border-slate-200 bg-white p-4">
           <div className="text-xs uppercase tracking-wide text-slate-500">API Credits</div>
           <div className="mt-1 text-2xl font-semibold text-slate-900">{formatNumber(stats.estimatedApiCredits)}</div>
-          <p className="mt-1 text-xs text-slate-500">Estimated from completed operations and response volume.</p>
+          <p className="mt-1 text-xs text-slate-500">Derived from persisted run operations and response output volume.</p>
         </article>
         <article className="rounded border border-slate-200 bg-white p-4">
           <div className="text-xs uppercase tracking-wide text-slate-500">Responses Received</div>

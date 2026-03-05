@@ -10,7 +10,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   AGENT_CATALOG,
-  BUILTIN_WORKFLOW_TEMPLATES,
   WorkflowStepSchema
 } from "@agentfoundry/shared";
 import { z } from "zod";
@@ -80,56 +79,6 @@ function seedAgents() {
         description: agent.description,
         allowlist: JSON.stringify(agent.allowlist),
         defaultParams: JSON.stringify(agent.defaultParams)
-      });
-    }
-  });
-
-  tx();
-}
-
-function seedTemplates() {
-  const teamId = "team-default";
-  const existing = db
-    .prepare("SELECT COUNT(*) AS count FROM workflows WHERE team_id = ?")
-    .get(teamId) as { count: number };
-
-  if (existing.count > 0) {
-    return;
-  }
-
-  const now = new Date().toISOString();
-  const insertWorkflow = db.prepare(`
-    INSERT INTO workflows (id, team_id, name, description, forked_from, created_by, created_at, updated_at)
-    VALUES (@id, @teamId, @name, @description, @forkedFrom, @createdBy, @createdAt, @updatedAt)
-  `);
-
-  const insertVersion = db.prepare(`
-    INSERT INTO workflow_versions (id, workflow_id, version, changelog, steps_json, created_by, created_at)
-    VALUES (@id, @workflowId, @version, @changelog, @stepsJson, @createdBy, @createdAt)
-  `);
-
-  const tx = db.transaction(() => {
-    for (const template of BUILTIN_WORKFLOW_TEMPLATES) {
-      const workflowId = `wf_${randomUUID()}`;
-      insertWorkflow.run({
-        id: workflowId,
-        teamId,
-        name: template.name,
-        description: template.description,
-        forkedFrom: null,
-        createdBy: "system",
-        createdAt: now,
-        updatedAt: now
-      });
-
-      insertVersion.run({
-        id: `wfv_${randomUUID()}`,
-        workflowId,
-        version: 1,
-        changelog: template.changelog,
-        stepsJson: JSON.stringify(template.steps),
-        createdBy: "system",
-        createdAt: now
       });
     }
   });
@@ -426,7 +375,6 @@ function createRegistryServer() {
 
 initDb();
 seedAgents();
-seedTemplates();
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));

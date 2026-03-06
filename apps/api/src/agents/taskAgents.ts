@@ -61,6 +61,20 @@ function sanitizeStringArray(input: unknown) {
     .filter(Boolean);
 }
 
+function normalizeActionToken(value: unknown) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim().replace(/\s+/g, "_").toUpperCase();
+}
+
+function hasDbUpdateSignal(output: Record<string, unknown>) {
+  const status = typeof output.status === "string" ? output.status.toLowerCase() : "";
+  const dbTarget = typeof output.db_target === "string" ? output.db_target.trim() : "";
+  const insertId = typeof output.insert_id === "string" ? output.insert_id.trim() : "";
+  return (status === "inserted" && Boolean(dbTarget)) || Boolean(insertId);
+}
+
 function renderPromptTemplate(template: string, runContext: Record<string, unknown>) {
   return template.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (_match, key) => {
     const raw = runContext[key];
@@ -1664,12 +1678,132 @@ export async function runTaskAgent(params: {
     const mode = String(stepParams.outputMode ?? "run_summary");
     const summary = String(runContext.lastSummary ?? "Workflow completed");
     const destination = String(runContext.destination ?? "Operations Team");
+    const summarySource = buildSummarySource(runContext);
+    const findings = (summarySource.findings ?? {}) as Record<string, unknown>;
+    const recommendationObject =
+      findings.finalRecommendation && typeof findings.finalRecommendation === "object"
+        ? (findings.finalRecommendation as Record<string, unknown>)
+        : null;
+    const discoveredSourceUrl = summarySource.recentSteps
+      .slice()
+      .reverse()
+      .map((entry) => (entry.output && typeof entry.output === "object" ? (entry.output as Record<string, unknown>) : null))
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+      .map((entry) => {
+        if (typeof entry.source_url === "string" && entry.source_url.trim()) {
+          return entry.source_url.trim();
+        }
+        if (typeof entry.dataset_url === "string" && entry.dataset_url.trim()) {
+          return entry.dataset_url.trim();
+        }
+        const meta = entry.dataset_meta;
+        if (meta && typeof meta === "object" && typeof (meta as Record<string, unknown>).source_url === "string") {
+          return String((meta as Record<string, unknown>).source_url).trim();
+        }
+        return "";
+      })
+      .find(Boolean);
+    const decisionTitle =
+      typeof stepParams.decision_title === "string" && stepParams.decision_title.trim()
+        ? stepParams.decision_title.trim()
+        : "Decision Console";
+    const recommendedAction =
+      typeof stepParams.recommended_action === "string" && stepParams.recommended_action.trim()
+        ? stepParams.recommended_action.trim()
+        : typeof findings.decision === "string" && findings.decision.trim()
+          ? findings.decision.trim()
+          : recommendationObject && typeof recommendationObject.decision === "string" && recommendationObject.decision.trim()
+            ? recommendationObject.decision.trim()
+            : "REVIEW";
+    const reason =
+      typeof stepParams.reason === "string" && stepParams.reason.trim()
+        ? stepParams.reason.trim()
+        : typeof findings.primary_issue === "string" && findings.primary_issue.trim()
+          ? findings.primary_issue.trim()
+          : "Decision routed for operator review.";
+    const confidence =
+      typeof findings.confidence === "number"
+        ? findings.confidence
+        : recommendationObject && typeof recommendationObject.confidence === "number"
+          ? recommendationObject.confidence
+          : null;
+    const supportingFindings = Array.isArray(stepParams.supporting_findings)
+      ? stepParams.supporting_findings
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .map((value) => value.trim())
+      : Array.isArray(findings.recommended_actions)
+        ? (findings.recommended_actions as unknown[])
+            .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+            .slice(0, 4)
+        : [];
+    const sourceUrl =
+      (typeof stepParams.source_url === "string" && stepParams.source_url.trim()) ||
+      (typeof stepParams.dataset_url === "string" && stepParams.dataset_url.trim()) ||
+      discoveredSourceUrl ||
+      "";
     const messageTemplate =
       typeof stepParams.messageTemplate === "string" && stepParams.messageTemplate.trim()
         ? stepParams.messageTemplate
         : `# Run Summary\n\n- Destination: ${destination}\n- Summary: ${summary}`;
     const includeContext = stepParams.includeContext === true;
     const contextPayload = includeContext ? runContext : undefined;
+
+    if (mode === "change_gate") {
+      const lastOutputRecord =
+        runContext.lastOutput && typeof runContext.lastOutput === "object"
+          ? (runContext.lastOutput as Record<string, unknown>)
+          : null;
+      const recentOutputs = summarySource.recentSteps
+        .map((entry) => (entry.output && typeof entry.output === "object" ? (entry.output as Record<string, unknown>) : null))
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+      const dbUpdated = recentOutputs.some((output) => hasDbUpdateSignal(output));
+      const actionToken = normalizeActionToken(
+        stepParams.recommended_action ??
+          lastOutputRecord?.recommended_action ??
+          lastOutputRecord?.decision ??
+          findings.recommended_action ??
+          findings.decision
+      );
+      const yesActions = new Set([
+        "INSPECT",
+        "ESCALATE",
+        "SPLIT_ORDER",
+        "EXPEDITE",
+        "DISPATCH_RESERVE",
+        "ISSUE_ALERT",
+        "QUARANTINE_BATCH",
+        "RECHECK_PROCESS"
+      ]);
+      const noActions = new Set(["MONITOR", "MONITOR_GRID", "HOLD", "CONTINUE_MONITORING"]);
+      const makeChange =
+        yesActions.has(actionToken) ? "YES" : noActions.has(actionToken) ? "NO" : typeof confidence === "number" && confidence >= 0.7 ? "YES" : "NO";
+      const suggestedAction = actionToken && actionToken !== "UNKNOWN" ? actionToken : makeChange === "YES" ? "ESCALATE" : "MONITOR";
+      const gateReason =
+        makeChange === "YES"
+          ? `Recommended action ${actionToken || "UNKNOWN"} requires an operational change.`
+          : `Recommended action ${actionToken || "UNKNOWN"} favors monitoring/no immediate change.`;
+      const nonDbNote = dbUpdated
+        ? "Recommendation includes a persisted update signal."
+        : "No database update was performed; recommendation is based on workflow outputs and risk signals.";
+      return {
+        output: {
+          outputMode: "change_gate",
+          decision_title: "Make A Change",
+          make_change: makeChange,
+          recommended_action: suggestedAction,
+          suggested_action: suggestedAction,
+          reason: `${gateReason} ${nonDbNote}`,
+          db_update_performed: dbUpdated,
+          confidence,
+          source_url: sourceUrl || null,
+          supporting_findings: supportingFindings
+        },
+        confidence: typeof confidence === "number" ? clamp(confidence) : 0.8,
+        rationale: "Deterministic change gate decision derived from Decision Console recommendation.",
+        toolCalls,
+        mockMode: false
+      };
+    }
 
     if (mode === "webhook") {
       const webhookUrl = String(stepParams.webhookUrl ?? "").trim();
@@ -1754,6 +1888,14 @@ export async function runTaskAgent(params: {
       artifactType: "markdown",
       markdown: messageTemplate,
       summary,
+      decision_title: decisionTitle,
+      recommended_action: recommendedAction,
+      decision: recommendedAction,
+      reason,
+      confidence,
+      supporting_findings: supportingFindings,
+      source_url: sourceUrl || null,
+      dataset_url: sourceUrl || null,
       recipientGroup: destination,
       context: contextPayload ?? null
     };

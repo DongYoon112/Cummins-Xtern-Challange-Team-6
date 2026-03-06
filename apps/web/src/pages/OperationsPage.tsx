@@ -171,6 +171,10 @@ export function OperationsPage() {
   );
 
   const waitingRuns = runs.filter((run) => run.status === "WAITING_APPROVAL");
+  const waitingRouterGates = runs.reduce(
+    (sum, run) => sum + run.steps.filter((step) => step.status === "WAITING_APPROVAL" && step.kind === "ROUTER").length,
+    0
+  );
 
   return (
     <div className="grid gap-4 xl:grid-cols-[300px,minmax(0,1fr),360px]">
@@ -300,9 +304,19 @@ export function OperationsPage() {
             Your role is not approver. You can still monitor runs in <code>Process View</code>.
           </div>
         ) : approvals.length === 0 ? (
-          <p className="text-sm text-slate-500">No pending approvals.</p>
+          <div className="space-y-2">
+            <p className="text-sm text-slate-500">No pending approvals.</p>
+            {waitingRouterGates > 0 ? (
+              <p className="text-xs text-amber-700">
+                {waitingRouterGates} router gate(s) are waiting in War Room Decision Console.
+              </p>
+            ) : null}
+          </div>
         ) : (
           <div className="space-y-3">
+            <div className="text-xs text-slate-600">
+              Approval queue: {approvals.length} | Router gates waiting: {waitingRouterGates}
+            </div>
             {approvals.map((approval) => (
               <div className="rounded border border-slate-200 p-3" key={approval.id}>
                 <div className="text-sm font-medium">

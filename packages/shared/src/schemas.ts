@@ -436,210 +436,464 @@ export const AGENT_CATALOG: AgentCatalogEntry[] = [
 
 export const BUILTIN_WORKFLOW_TEMPLATES = [
   {
-    name: "war-room-response",
-    description: "Runbook workflow for live War Room supplier risk mitigation.",
+    name: "Engine Health Incident Demo",
+    description: "NASA CMAPSS demo: load engine slice, debate failure mode, route to Decision Console, then publish final summary.",
     changelog: "Built-in template",
     steps: [
       {
-        id: "inventory-scan",
-        name: "Inventory Scan",
+        id: "dataset-loader",
+        name: "Dataset Loader",
         kind: "AGENT" as const,
-        agentName: "LLM Agent",
+        agentName: "DatasetLoaderAgent",
         params: {
-          toolId: "database",
-          query: "SELECT sku, on_hand, reserved, supplier_id FROM inventory WHERE (on_hand - reserved) < 25 ORDER BY sku LIMIT 100",
-          prompt: "Detect low-inventory risks and summarize alert severity by supplier."
+          dataset: "FD001",
+          dataset_name: "FD001",
+          source: "local",
+          source_type: "local_or_cached_demo",
+          dataset_url: "https://data.nasa.gov/dataset/cmapss-jet-engine-simulated-data",
+          local_path: "./data/CMAPSS/train_FD001.txt",
+          unit_id: 12,
+          window: 50,
+          workflow_name: "engine_health_incident_demo"
         }
       },
       {
-        id: "risk-detect",
-        name: "Detect Risk",
+        id: "feature-builder",
+        name: "Feature Builder",
         kind: "AGENT" as const,
-        agentName: "Supplier Risk Agent",
+        agentName: "FeatureBuilderAgent",
         params: {
-          confidenceThreshold: 0.65
+          window: 50,
+          slope_window: 10,
+          feature_mode: "summary"
         }
       },
       {
-        id: "multi-model-debate",
-        name: "Debate Mitigation Options",
+        id: "debate",
+        name: "Debate",
         kind: "AGENT" as const,
-        agentName: "Debate Agent",
+        agentName: "CMAPSS Debate Agent",
         params: {
-          debateTopic: "Choose the best mitigation plan for supplier and inventory risks",
-          debateRounds: 2,
+          debateTopic: "Diagnose probable failure mode using top CMAPSS anomalies.",
+          debateRounds: 1,
+          synthesisMode: "arbiter",
+          roleFraming: ["Mechanical Specialist", "Thermal Specialist", "Controls Specialist"],
           outputSchemaVersion: "v1",
           requireJson: true
         }
       },
       {
-        id: "procurement-router",
-        name: "Human Router",
+        id: "router",
+        name: "Router",
         kind: "ROUTER" as const,
         params: {
           requiresApproval: true,
-          reason: "Human approval required before procurement action.",
+          reason: "Route incident to Decision Console for operator action.",
           routes: [
             {
-              label: "Execute Mitigation",
+              label: "Approve Route To Decision Console",
               condition: "variables.routerDecision == 'approve'",
-              toNodeId: "execute-mitigation"
+              toNodeId: "decision-console"
             },
             {
-              label: "Skip Mitigation",
+              label: "Reject Route To Decision Console",
               condition: "variables.routerDecision == 'reject'",
-              toNodeId: "run-summary"
+              toNodeId: "decision-console"
             }
           ],
-          defaultRouteToNodeId: "run-summary"
+          defaultRouteToNodeId: "decision-console"
         }
       },
       {
-        id: "execute-mitigation",
-        name: "Execute Mitigation",
-        kind: "AGENT" as const,
-        agentName: "LLM Agent",
-        params: {
-          toolId: "database",
-          allowDbWrite: true,
-          stopOnReject: false,
-          query: "INSERT INTO purchase_orders (id, team_id, vendor_id, part_id, qty, status, created_at, updated_at) VALUES ('{{variables.poId}}', '{{teamId}}', '{{variables.vendorId}}', '{{variables.partId}}', {{variables.qty}}, 'DRAFT', '{{variables.now}}', '{{variables.now}}')",
-          prompt: "Create mitigation procurement actions and prepare vendor dispatch updates."
-        }
-      },
-      {
-        id: "run-summary",
-        name: "Run Summary",
+        id: "decision-console",
+        name: "Decision Console",
         kind: "AGENT" as const,
         agentName: "Notification Agent",
         params: {
           outputMode: "run_summary",
-          messageTemplate: "# War Room Summary\n\n{{lastOutput}}"
+          decision_title: "Engine Health Decision Console",
+          recommended_action: "INSPECT",
+          decision_options: ["INSPECT", "MONITOR", "ESCALATE"],
+          reason: "Debate and anomaly signals indicate likely engine degradation requiring operator action.",
+          source_url: "https://data.nasa.gov/dataset/cmapss-jet-engine-simulated-data",
+          dataset_url: "https://data.nasa.gov/dataset/cmapss-jet-engine-simulated-data",
+          supporting_findings: ["primary_issue", "top_anomalies", "hypotheses"],
+          messageTemplate:
+            "Decision Console: Recommended action INSPECT. Triggered by CMAPSS anomaly and debate findings for unit 12."
+        }
+      },
+      {
+        id: "change-gate",
+        name: "Make A Change",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "change_gate",
+          decision_title: "Engine Health Change Gate"
+        }
+      },
+      {
+        id: "output-summary",
+        name: "Output",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "run_summary",
+          source_url: "https://data.nasa.gov/dataset/cmapss-jet-engine-simulated-data",
+          dataset_url: "https://data.nasa.gov/dataset/cmapss-jet-engine-simulated-data",
+          recommended_action: "INSPECT",
+          messageTemplate:
+            "The workflow analyzed FD001 unit 12, identified a likely engine degradation issue, and routed the case to the Decision Console for recommended action."
         }
       }
     ]
   },
   {
-    name: "Backorder Resolution",
-    description: "Resolve order backorders with cost-aware logistics and approvals.",
+    name: "Supply Chain Reorder Risk Demo",
+    description: "Kaggle DataCo demo: assess inventory/supplier reorder risk, route recommendation to Decision Console, and output final summary.",
     changelog: "Built-in template",
     steps: [
       {
-        id: "inventory-check",
-        name: "Inventory Check",
-        kind: "AGENT" as const,
-        agentName: "Inventory Agent",
-        params: { sku: "SKU-100", orderId: "ORD-1001" }
-      },
-      {
-        id: "logistics-plan",
-        name: "Logistics Plan",
-        kind: "AGENT" as const,
-        agentName: "Logistics Agent",
-        params: { destination: "Indianapolis" }
-      },
-      {
-        id: "finance-impact",
-        name: "Finance Impact",
-        kind: "AGENT" as const,
-        agentName: "Finance Agent",
-        params: { confidenceThreshold: 0.7, costThreshold: 500 }
-      },
-      {
-        id: "manager-approval",
-        name: "Manager Approval",
-        kind: "APPROVAL" as const,
-        params: { reason: "High-impact action approval" }
-      },
-      {
-        id: "notify-team",
-        name: "Notify Team",
-        kind: "AGENT" as const,
-        agentName: "Notification Agent",
-        params: { channel: "email" }
-      }
-    ]
-  },
-  {
-    name: "Supplier Risk Check",
-    description: "Assess supplier risk before PO release.",
-    changelog: "Built-in template",
-    steps: [
-      {
-        id: "supplier-risk",
-        name: "Supplier Risk",
-        kind: "AGENT" as const,
-        agentName: "Supplier Risk Agent",
-        params: { supplierId: "SUP-02" }
-      },
-      {
-        id: "finance-review",
-        name: "Finance Review",
-        kind: "AGENT" as const,
-        agentName: "Finance Agent",
-        params: { costThreshold: 500 }
-      },
-      {
-        id: "risk-approval",
-        name: "Risk Approval",
-        kind: "APPROVAL" as const,
-        params: { reason: "Supplier risk requires approver" }
-      }
-    ]
-  },
-  {
-    name: "Procurement Scan",
-    description: "Scan low inventory and create draft purchase orders with approval gates.",
-    changelog: "Built-in template",
-    steps: [
-      {
-        id: "scan-low-inventory",
-        name: "Scan Low Inventory",
+        id: "supply-loader",
+        name: "Supply Loader",
         kind: "AGENT" as const,
         agentName: "LLM Agent",
         params: {
-          toolId: "database",
-          query: "SELECT sku, on_hand, reserved FROM inventory WHERE (on_hand - reserved) < 20 ORDER BY sku",
-          maxRows: 100,
-          prompt: "Summarize inventory risk and propose PO quantity for each row."
+          llmNodeMode: "llm",
+          prompt:
+            "Use configured demo inputs for SKU INJ-4402 at PLANT-A to summarize stock risk and reorder pressure. Include stock_risk, supplier_risk, and reorder recommendation.",
+          workflow_name: "supply_chain_reorder_demo",
+          sku_id: "INJ-4402",
+          plant_id: "PLANT-A",
+          inventory_on_hand: 180,
+          reorder_point: 250,
+          target_stock: 700,
+          source_url: "https://www.kaggle.com/datasets/shashwatwork/dataco-smart-supply-chain-for-big-data-analysis",
+          dataset_url: "https://www.kaggle.com/datasets/shashwatwork/dataco-smart-supply-chain-for-big-data-analysis",
+          source_type: "local_or_cached_demo",
+          local_path: "./data/demo/supply_chain_reorder.csv"
         }
       },
       {
-        id: "procurement-router",
-        name: "Approval Router",
+        id: "research-agent",
+        name: "Research Agent",
+        kind: "AGENT" as const,
+        agentName: "LLM Agent",
+        params: {
+          llmNodeMode: "llm",
+          prompt:
+            "Generate a concise supply-chain risk brief with stock_risk, supplier_risk, reorder recommendation, and possible actions for operators."
+        }
+      },
+      {
+        id: "debate",
+        name: "Debate",
+        kind: "AGENT" as const,
+        agentName: "Debate Agent",
+        params: {
+          debateTopic:
+            "Evaluate reorder options for elevated stockout risk: place standard order, split order, or expedite a partial order.",
+          debateRounds: 1,
+          synthesisMode: "arbiter",
+          outputSchemaVersion: "v1",
+          requireJson: true
+        }
+      },
+      {
+        id: "router",
+        name: "Router",
         kind: "ROUTER" as const,
         params: {
+          requiresApproval: true,
+          reason: "Route reorder recommendation to Decision Console.",
           routes: [
             {
-              label: "Needs Approval",
-              condition: "variables.requiresApproval == true",
-              toNodeId: "po-write"
+              label: "Approve Route To Decision Console",
+              condition: "variables.routerDecision == 'approve'",
+              toNodeId: "decision-console"
+            },
+            {
+              label: "Reject Route To Decision Console",
+              condition: "variables.routerDecision == 'reject'",
+              toNodeId: "decision-console"
             }
           ],
-          defaultRouteToNodeId: "notify-procurement"
+          defaultRouteToNodeId: "decision-console"
         }
       },
       {
-        id: "po-write",
-        name: "Create Draft PO",
-        kind: "AGENT" as const,
-        agentName: "LLM Agent",
-        params: {
-          toolId: "database",
-          allowDbWrite: true,
-          stopOnReject: false,
-          query: "INSERT INTO purchase_orders (id, team_id, vendor_id, part_id, qty, status, created_at, updated_at) VALUES ('{{variables.poId}}', '{{teamId}}', '{{variables.vendorId}}', '{{variables.partId}}', {{variables.qty}}, 'DRAFT', '{{variables.now}}', '{{variables.now}}')",
-          prompt: "Confirm draft PO write intent."
-        }
-      },
-      {
-        id: "notify-procurement",
-        name: "Output Summary",
+        id: "decision-console",
+        name: "Decision Console",
         kind: "AGENT" as const,
         agentName: "Notification Agent",
         params: {
           outputMode: "run_summary",
-          messageTemplate: "# Procurement Scan\n\n{{lastOutput}}"
+          decision_title: "Supply Chain Decision Console",
+          recommended_action: "SPLIT_ORDER",
+          decision_options: ["SPLIT_ORDER", "EXPEDITE", "HOLD"],
+          reason: "Stockout risk exceeds reorder threshold and supplier delay risk is elevated.",
+          source_url: "https://www.kaggle.com/datasets/shashwatwork/dataco-smart-supply-chain-for-big-data-analysis",
+          dataset_url: "https://www.kaggle.com/datasets/shashwatwork/dataco-smart-supply-chain-for-big-data-analysis",
+          supporting_findings: ["stock_risk", "supplier_risk", "recommended_actions"],
+          messageTemplate:
+            "Decision Console: Recommended action SPLIT_ORDER. Triggered by elevated stockout and supplier delay risk."
+        }
+      },
+      {
+        id: "change-gate",
+        name: "Make A Change",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "change_gate",
+          decision_title: "Supply Chain Change Gate"
+        }
+      },
+      {
+        id: "output-summary",
+        name: "Output",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "run_summary",
+          source_url: "https://www.kaggle.com/datasets/shashwatwork/dataco-smart-supply-chain-for-big-data-analysis",
+          dataset_url: "https://www.kaggle.com/datasets/shashwatwork/dataco-smart-supply-chain-for-big-data-analysis",
+          recommended_action: "SPLIT_ORDER",
+          messageTemplate:
+            "The workflow identified elevated stockout risk and routed a reorder recommendation to the Decision Console."
+        }
+      }
+    ]
+  },
+  {
+    name: "Grid Energy Operations Risk Demo",
+    description: "Open Power System Data demo: summarize operational stress, debate response, route to Decision Console, and publish output.",
+    changelog: "Built-in template",
+    steps: [
+      {
+        id: "dataset-loader",
+        name: "Dataset Source Loader",
+        kind: "AGENT" as const,
+        agentName: "LLM Agent",
+        params: {
+          llmNodeMode: "llm",
+          prompt:
+            "Summarize operational stress signals for region DE under scenario high_load_low_renewables and provide key indicators.",
+          workflow_name: "energy_operations_risk_demo",
+          region: "DE",
+          scenario: "high_load_low_renewables",
+          date_range: "sample",
+          source_url: "https://open-power-system-data.org/",
+          dataset_url: "https://open-power-system-data.org/",
+          source_type: "local_or_cached_demo",
+          local_path: "./data/demo/energy_ops_sample.csv"
+        }
+      },
+      {
+        id: "feature-summary",
+        name: "Feature Builder",
+        kind: "AGENT" as const,
+        agentName: "LLM Agent",
+        params: {
+          llmNodeMode: "llm",
+          prompt:
+            "Produce a concise feature summary of load stress, renewable deficit, and balancing risk from the prior step context."
+        }
+      },
+      {
+        id: "debate",
+        name: "Debate",
+        kind: "AGENT" as const,
+        agentName: "Debate Agent",
+        params: {
+          debateTopic:
+            "Debate the best operational response for grid stress in DE under high load and low renewables.",
+          debateRounds: 1,
+          synthesisMode: "arbiter",
+          roleFraming: ["Operations Specialist", "Grid Stability Specialist", "Cost/Risk Specialist"],
+          outputSchemaVersion: "v1",
+          requireJson: true
+        }
+      },
+      {
+        id: "router",
+        name: "Router",
+        kind: "ROUTER" as const,
+        params: {
+          requiresApproval: true,
+          reason: "Route energy operations recommendation to Decision Console.",
+          routes: [
+            {
+              label: "Approve Route To Decision Console",
+              condition: "variables.routerDecision == 'approve'",
+              toNodeId: "decision-console"
+            },
+            {
+              label: "Reject Route To Decision Console",
+              condition: "variables.routerDecision == 'reject'",
+              toNodeId: "decision-console"
+            }
+          ],
+          defaultRouteToNodeId: "decision-console"
+        }
+      },
+      {
+        id: "decision-console",
+        name: "Decision Console",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "run_summary",
+          decision_title: "Energy Operations Decision Console",
+          recommended_action: "DISPATCH_RESERVE",
+          decision_options: ["MONITOR_GRID", "DISPATCH_RESERVE", "ISSUE_ALERT"],
+          reason: "Operational stress scenario indicates reserve dispatch may reduce near-term grid risk.",
+          source_url: "https://open-power-system-data.org/",
+          dataset_url: "https://open-power-system-data.org/",
+          supporting_findings: ["confidence", "finalRecommendation", "recommended_actions"],
+          messageTemplate:
+            "Decision Console: Recommended action DISPATCH_RESERVE based on debated grid-risk signals."
+        }
+      },
+      {
+        id: "change-gate",
+        name: "Make A Change",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "change_gate",
+          decision_title: "Energy Ops Change Gate"
+        }
+      },
+      {
+        id: "output-summary",
+        name: "Output",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "run_summary",
+          source_url: "https://open-power-system-data.org/",
+          dataset_url: "https://open-power-system-data.org/",
+          recommended_action: "DISPATCH_RESERVE",
+          messageTemplate:
+            "The workflow reviewed energy operations signals, debated the likely operational risk, and routed the recommended action to the Decision Console."
+        }
+      }
+    ]
+  },
+  {
+    name: "Industrial Quality Manufacturing Incident Demo",
+    description: "SECOM-linked manufacturing quality demo: load cached sample, debate incident risk, route to Decision Console, and output summary.",
+    changelog: "Built-in template",
+    steps: [
+      {
+        id: "dataset-loader",
+        name: "Dataset Loader",
+        kind: "AGENT" as const,
+        agentName: "DatasetLoaderAgent",
+        params: {
+          dataset: "FD001",
+          dataset_name: "SECOM_demo_cached_proxy",
+          source: "local",
+          source_type: "local_or_cached_demo",
+          dataset_url: "https://archive.ics.uci.edu/ml/datasets/SECOM",
+          local_path: "./data/CMAPSS/train_FD001.txt",
+          demo_data_note: "Demo uses local cached surrogate rows while referencing the real SECOM source URL.",
+          unit_id: 3,
+          window: 25,
+          batch_id: "BATCH-1042",
+          line_id: "LINE-3",
+          workflow_name: "manufacturing_quality_incident_demo"
+        }
+      },
+      {
+        id: "feature-builder",
+        name: "Feature Builder",
+        kind: "AGENT" as const,
+        agentName: "FeatureBuilderAgent",
+        params: {
+          window: 25,
+          slope_window: 8,
+          feature_mode: "summary"
+        }
+      },
+      {
+        id: "debate",
+        name: "Debate",
+        kind: "AGENT" as const,
+        agentName: "Debate Agent",
+        params: {
+          debateTopic:
+            "Evaluate whether the batch should be quarantined based on current quality drift and process instability indicators.",
+          debateRounds: 1,
+          synthesisMode: "arbiter",
+          roleFraming: ["Quality Engineer", "Process Engineer", "Maintenance Engineer"],
+          outputSchemaVersion: "v1",
+          requireJson: true
+        }
+      },
+      {
+        id: "router",
+        name: "Router",
+        kind: "ROUTER" as const,
+        params: {
+          requiresApproval: true,
+          reason: "Route manufacturing incident recommendation to Decision Console.",
+          routes: [
+            {
+              label: "Approve Route To Decision Console",
+              condition: "variables.routerDecision == 'approve'",
+              toNodeId: "decision-console"
+            },
+            {
+              label: "Reject Route To Decision Console",
+              condition: "variables.routerDecision == 'reject'",
+              toNodeId: "decision-console"
+            }
+          ],
+          defaultRouteToNodeId: "decision-console"
+        }
+      },
+      {
+        id: "decision-console",
+        name: "Decision Console",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "run_summary",
+          decision_title: "Manufacturing Incident Decision Console",
+          recommended_action: "QUARANTINE_BATCH",
+          decision_options: ["QUARANTINE_BATCH", "RECHECK_PROCESS", "CONTINUE_MONITORING"],
+          reason: "Quality-risk signals indicate potential batch impact and process drift.",
+          source_url: "https://archive.ics.uci.edu/ml/datasets/SECOM",
+          dataset_url: "https://archive.ics.uci.edu/ml/datasets/SECOM",
+          supporting_findings: ["primary_issue", "recommended_actions", "confidence"],
+          messageTemplate:
+            "Decision Console: Recommended action QUARANTINE_BATCH based on debated quality-risk findings."
+        }
+      },
+      {
+        id: "change-gate",
+        name: "Make A Change",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "change_gate",
+          decision_title: "Manufacturing Change Gate"
+        }
+      },
+      {
+        id: "output-summary",
+        name: "Output",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          outputMode: "run_summary",
+          source_url: "https://archive.ics.uci.edu/ml/datasets/SECOM",
+          dataset_url: "https://archive.ics.uci.edu/ml/datasets/SECOM",
+          recommended_action: "QUARANTINE_BATCH",
+          messageTemplate:
+            "The workflow identified possible manufacturing quality risk and routed the incident to the Decision Console."
         }
       }
     ]

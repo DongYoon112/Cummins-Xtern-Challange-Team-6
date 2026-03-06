@@ -20,6 +20,7 @@ export function HomePage() {
   const [runs, setRuns] = useState<RunState[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [approvalsUnavailable, setApprovalsUnavailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<string>("");
 
@@ -29,14 +30,24 @@ export function HomePage() {
     }
 
     let cancelled = false;
+    const canSeeApprovals = user?.role === "ADMIN" || user?.role === "APPROVER";
 
     const load = async () => {
       try {
-        const [runsPayload, workflowsPayload, approvalsPayload] = await Promise.all([
+        const [runsPayload, workflowsPayload] = await Promise.all([
           apiFetch<{ runs: RunState[] }>("/runs", {}, token),
-          apiFetch<{ workflows: WorkflowSummary[] }>("/workflows", {}, token),
-          apiFetch<{ approvals: Approval[] }>("/approvals", {}, token).catch(() => ({ approvals: [] as Approval[] }))
+          apiFetch<{ workflows: WorkflowSummary[] }>("/workflows", {}, token)
         ]);
+
+        let approvalsPayload: { approvals: Approval[] } = { approvals: [] };
+        let approvalsDenied = false;
+        if (canSeeApprovals) {
+          try {
+            approvalsPayload = await apiFetch<{ approvals: Approval[] }>("/approvals", {}, token);
+          } catch {
+            approvalsDenied = true;
+          }
+        }
 
         if (cancelled) {
           return;
@@ -45,6 +56,7 @@ export function HomePage() {
         setRuns(runsPayload.runs ?? []);
         setWorkflows(workflowsPayload.workflows ?? []);
         setApprovals(approvalsPayload.approvals ?? []);
+        setApprovalsUnavailable(approvalsDenied);
         setUpdatedAt(new Date().toLocaleTimeString());
         setError(null);
       } catch (err) {
@@ -64,7 +76,7 @@ export function HomePage() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [token]);
+  }, [token, user?.role]);
 
   const stats = useMemo(() => {
     const totalOperations = runs.reduce((sum, run) => sum + run.steps.length, 0);
@@ -78,6 +90,10 @@ export function HomePage() {
     const failedRuns = runs.filter((run) => run.status === "FAILED" || run.status === "REJECTED").length;
     const successRate = finishedRuns + failedRuns > 0 ? (finishedRuns / (finishedRuns + failedRuns)) * 100 : 100;
     const estimatedApiCredits = Math.round(completedOperations * 2.4 + responsesReceived * 0.8);
+    const pendingGates = runs.reduce(
+      (sum, run) => sum + run.steps.filter((step) => step.status === "WAITING_APPROVAL").length,
+      0
+    );
 
     return {
       totalOperations,
@@ -85,7 +101,8 @@ export function HomePage() {
       responsesReceived,
       activeRuns,
       successRate,
-      estimatedApiCredits
+      estimatedApiCredits,
+      pendingGates
     };
   }, [runs]);
 
@@ -136,8 +153,12 @@ export function HomePage() {
               <span className="font-semibold text-slate-900">{formatNumber(runs.length)}</span>
             </div>
             <div className="flex items-center justify-between rounded bg-slate-50 px-3 py-2">
-              <span className="text-slate-600">Pending approvals</span>
-              <span className="font-semibold text-slate-900">{formatNumber(approvals.length)}</span>
+              <span className="text-slate-600">Pending gates</span>
+              <span className="font-semibold text-slate-900">{formatNumber(stats.pendingGates)}</span>
+            </div>
+            <div className="text-xs text-slate-500">
+              Approval queue: {approvalsUnavailable ? "unavailable" : formatNumber(approvals.length)} | Router waits are included in
+              pending gates.
             </div>
           </div>
         </article>

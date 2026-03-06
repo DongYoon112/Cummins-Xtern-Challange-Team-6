@@ -42,11 +42,23 @@ export type RunReportSummary = {
 
 const FINDING_LABELS_BY_KEY: Record<string, string> = {
   dataset: "Dataset",
+  dataset_url: "Dataset URL",
+  source_url: "Source URL",
   unit_id: "Unit ID",
   primary_issue: "Primary Issue",
   confidence: "Confidence",
   hypotheses: "Hypotheses",
   recommended_actions: "Recommended Actions",
+  recommended_action: "Recommended Action",
+  make_change: "Make Change",
+  suggested_action: "Suggested Action",
+  db_update_performed: "DB Update Performed",
+  decision_title: "Decision Title",
+  reason: "Reason",
+  supporting_findings: "Supporting Findings",
+  transcript_summary: "Transcript Summary",
+  stock_risk: "Stock Risk",
+  supplier_risk: "Supplier Risk",
   policy_decision: "Policy Decision",
   top_anomalies: "Top Anomalies",
   selectedcarrier: "Selected Carrier",
@@ -267,7 +279,12 @@ function deriveDbPersistence(run: RunState): DbPersistenceSummary {
 }
 
 function deriveFinalDecision(findings: Map<string, ReportFinding>) {
-  return findings.get("decision")?.value ?? findings.get("finalrecommendation")?.value ?? "n/a";
+  return (
+    findings.get("decision")?.value ??
+    findings.get("recommendedaction")?.value ??
+    findings.get("finalrecommendation")?.value ??
+    "n/a"
+  );
 }
 
 function deriveConfidence(findings: Map<string, ReportFinding>, run: RunState) {
@@ -322,6 +339,7 @@ function deriveFinalNarrative(
   const confidence = deriveConfidence(findings, run);
   const confidenceText = confidence === "n/a" ? "with no confidence score reported" : `with a confidence score of ${confidence}`;
   const decision = deriveFinalDecision(findings);
+  const sourceUrl = findings.get("sourceurl")?.value ?? findings.get("dataseturl")?.value ?? null;
   const dbClause = db.present
     ? db.success
       ? `The result was saved to ${db.table ?? "the target table"} in ${db.target ?? "the configured database"}.`
@@ -331,7 +349,8 @@ function deriveFinalNarrative(
   const stepText = stepCount === 1 ? "1 step" : `${stepCount} steps`;
   const datasetText = incidentDataset ? ` using dataset ${incidentDataset}${unitSuffix}` : "";
   const decisionText = decision !== "n/a" ? ` The final decision was ${decision}.` : "";
-  return `This run executed ${stepText}${datasetText}, identified ${primaryIssue}, and finished ${confidenceText}.${decisionText} ${dbClause}`;
+  const sourceText = sourceUrl && sourceUrl !== "n/a" ? ` Source: ${sourceUrl}.` : "";
+  return `This run executed ${stepText}${datasetText}, identified ${primaryIssue}, and finished ${confidenceText}.${decisionText}${sourceText} ${dbClause}`;
 }
 
 export function summarizeRunForReport(run: RunState): RunReportSummary {

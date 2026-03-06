@@ -1233,6 +1233,21 @@ export class OrchestratorService {
         run.status = "RUNNING";
         run.currentStepIndex = stepIndex + 1;
         await this.persistRun(run, params.actor);
+        await this.emitWarRoomEvent(params.actor, {
+          runId: run.runId,
+          workflowId: run.workflowId,
+          stepId: step.stepId,
+          type: "WORKFLOW_STATUS_UPDATE",
+          payload: {
+            status: run.status,
+            stepId: step.stepId,
+            stepName: step.name,
+            gateType,
+            message: `Approval decision received: ${params.decision}`,
+            comment: params.comment ?? null
+          },
+          timestamp: now
+        });
         await this.executeFromCurrentStep(run, params.actor);
         const refreshed = await this.getRun(run.runId, params.actor.teamId);
         if (!refreshed) {
@@ -1245,6 +1260,21 @@ export class OrchestratorService {
       run.error = `Rejected by approver: ${params.comment ?? "No comment"}`;
       run.completedAt = now;
       await this.persistRun(run, params.actor);
+      await this.emitWarRoomEvent(params.actor, {
+        runId: run.runId,
+        workflowId: run.workflowId,
+        stepId: step.stepId,
+        type: "WORKFLOW_STATUS_UPDATE",
+        payload: {
+          status: run.status,
+          stepId: step.stepId,
+          stepName: step.name,
+          gateType,
+          message: `Approval decision received: ${params.decision}`,
+          comment: params.comment ?? null
+        },
+        timestamp: now
+      });
       return run;
     }
 
@@ -1262,6 +1292,21 @@ export class OrchestratorService {
     }
     run.status = "RUNNING";
     await this.persistRun(run, params.actor);
+    await this.emitWarRoomEvent(params.actor, {
+      runId: run.runId,
+      workflowId: run.workflowId,
+      stepId: step.stepId,
+      type: "WORKFLOW_STATUS_UPDATE",
+      payload: {
+        status: run.status,
+        stepId: step.stepId,
+        stepName: step.name,
+        gateType,
+        message: `Approval decision received: ${params.decision}`,
+        comment: params.comment ?? null
+      },
+      timestamp: now
+    });
     await this.executeFromCurrentStep(run, params.actor);
     const refreshed = await this.getRun(run.runId, params.actor.teamId);
     if (!refreshed) {

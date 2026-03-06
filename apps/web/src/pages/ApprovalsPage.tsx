@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import type { RunState } from "../lib/types";
 
 type Approval = {
   id: string;
@@ -93,6 +94,7 @@ function buildApprovalInsight(approval: Approval): ApprovalInsight {
 export function ApprovalsPage() {
   const { token } = useAuth();
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [runs, setRuns] = useState<RunState[]>([]);
   const [comment, setComment] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -102,14 +104,21 @@ export function ApprovalsPage() {
     setApprovals(payload.approvals);
   }
 
+  async function loadRuns() {
+    const payload = await apiFetch<{ runs: RunState[] }>("/runs", {}, token ?? undefined);
+    setRuns(payload.runs ?? []);
+  }
+
   useEffect(() => {
     if (!token) {
       return;
     }
 
     loadApprovals().catch((err) => setError(err instanceof Error ? err.message : "Failed to load approvals"));
+    loadRuns().catch(() => undefined);
     const interval = window.setInterval(() => {
       loadApprovals().catch(() => undefined);
+      loadRuns().catch(() => undefined);
     }, 5000);
 
     return () => window.clearInterval(interval);
@@ -132,17 +141,27 @@ export function ApprovalsPage() {
         token ?? undefined
       );
       setStatus(`Decision submitted: ${decision}`);
-      await loadApprovals();
+      await Promise.all([loadApprovals(), loadRuns()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to submit decision");
     }
   }
+
+  const waitingRouterGates = runs.reduce(
+    (sum, run) => sum + run.steps.filter((step) => step.status === "WAITING_APPROVAL" && step.kind === "ROUTER").length,
+    0
+  );
 
   return (
     <section className="space-y-3 rounded border border-slate-200 bg-white p-4">
       <h2 className="text-sm font-semibold">Pending Approvals</h2>
 
       {approvals.length === 0 ? <p className="text-sm text-slate-500">No pending approvals.</p> : null}
+      {approvals.length === 0 && waitingRouterGates > 0 ? (
+        <p className="text-xs text-amber-700">
+          {waitingRouterGates} router gate(s) are waiting in War Room Decision Console. This page only lists approval-queue items.
+        </p>
+      ) : null}
 
       {approvals.map((approval) => (
         <div className="rounded border border-amber-200 bg-amber-50 p-3" key={approval.id}>

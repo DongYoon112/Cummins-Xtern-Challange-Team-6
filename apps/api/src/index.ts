@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs";
 import cors from "cors";
 import express from "express";
 import { z } from "zod";
+import { BUILTIN_WORKFLOW_TEMPLATES, WorkflowStepSchema } from "@agentfoundry/shared";
 import type { DbUser } from "./lib/db";
 import { db, initApiDb } from "./lib/db";
 import { authRequired, signToken } from "./lib/auth";
@@ -27,6 +28,57 @@ loadEnv({ path: path.resolve(fileURLToPath(new URL("../../../.env", import.meta.
 const PORT = Number(process.env.API_PORT ?? 4000);
 
 initApiDb();
+
+const demoSeedByTeam = new Map<string, Promise<void>>();
+
+async function ensureDemoWorkflows(teamId: string) {
+  const existing = demoSeedByTeam.get(teamId);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const seedPromise = (async () => {
+    const listed = await callMcpTool<{ teamId: string }, { workflows?: unknown[] }>("registry", "list_workflows", { teamId });
+    const existingNames = new Set(
+      (listed.workflows ?? [])
+        .map((workflow) => {
+          if (!workflow || typeof workflow !== "object") {
+            return "";
+          }
+          const row = workflow as { name?: unknown };
+          return typeof row.name === "string" ? row.name.trim().toLowerCase() : "";
+        })
+        .filter(Boolean)
+    );
+
+    for (const template of BUILTIN_WORKFLOW_TEMPLATES) {
+      const nameKey = template.name.trim().toLowerCase();
+      if (existingNames.has(nameKey)) {
+        continue;
+      }
+
+      await callMcpTool("registry", "save_workflow_version", {
+        teamId,
+        name: template.name,
+        description: template.description,
+        changelog: template.changelog,
+        createdBy: "system-demo-seed",
+        steps: WorkflowStepSchema.array().parse(template.steps)
+      });
+      existingNames.add(nameKey);
+    }
+  })()
+    .catch((error) => {
+      console.error("failed to seed demo workflows", error);
+    })
+    .finally(() => {
+      demoSeedByTeam.delete(teamId);
+    });
+
+  demoSeedByTeam.set(teamId, seedPromise);
+  await seedPromise;
+}
 
 function normalizePublishResult(input: unknown): { workflowId: string; version: number } {
   const maybe = input as {
@@ -509,6 +561,7 @@ app.get("/agents", async (req, res) => {
 app.get("/workflows", async (req, res) => {
   try {
     const teamId = req.user!.teamId;
+    await ensureDemoWorkflows(teamId);
     const payload = await callMcpTool<{ teamId: string }, { workflows: unknown[] }>(
       "registry",
       "list_workflows",
@@ -1410,21 +1463,33 @@ app.post("/runs/:runId/overall-review", async (req, res) => {
 
     const deterministicFallback = (() => {
       const doneSteps = run.steps.filter((step) => step.status !== "PENDING").length;
-      const finalDecision = [...run.steps]
+      const finalOutput = [...run.steps]
         .reverse()
         .find((step) => step.output && typeof step.output === "object" && step.output !== null)?.output as
         | Record<string, unknown>
         | undefined;
-      const decision = typeof finalDecision?.decision === "string" ? finalDecision.decision : null;
+      const decision =
+        typeof finalOutput?.make_change === "string"
+          ? finalOutput.make_change
+          : typeof finalOutput?.decision === "string"
+            ? finalOutput.decision
+            : null;
+      const suggestedAction =
+        typeof finalOutput?.suggested_action === "string"
+          ? finalOutput.suggested_action
+          : typeof finalOutput?.recommended_action === "string"
+            ? finalOutput.recommended_action
+            : "MONITOR";
       const confidence =
         [...run.steps].reverse().find((step) => typeof step.confidence === "number")?.confidence ?? null;
-      const firstSentence = `This run completed with status ${run.status} after ${doneSteps} executed step${doneSteps === 1 ? "" : "s"}.`;
-      const secondSentence = decision
-        ? `The final decision was ${decision}${typeof confidence === "number" ? ` with confidence ${confidence.toFixed(2)}` : ""}.`
-        : typeof confidence === "number"
-          ? `The final confidence reported was ${confidence.toFixed(2)}.`
-          : "No final decision was reported.";
-      return `${firstSentence} ${secondSentence}`;
+      const yesNo =
+        decision === "YES" || decision === "NO"
+          ? decision
+          : typeof confidence === "number" && confidence >= 0.7
+            ? "YES"
+            : "NO";
+      const confidenceText = typeof confidence === "number" ? confidence.toFixed(2) : "n/a";
+      return `MAKE_CHANGE: ${yesNo}. ACTION: ${suggestedAction}. REASON: Run status ${run.status} across ${doneSteps} executed step${doneSteps === 1 ? "" : "s"} (confidence ${confidenceText}).`;
     })();
 
     if (!apiKey) {
@@ -1442,11 +1507,11 @@ app.post("/runs/:runId/overall-review", async (req, res) => {
       model,
       apiKey,
       systemPrompt: [
-        "You are an operations analyst writing for non-technical users.",
-        "Write 2-4 direct sentences in plain English.",
-        "State what happened, the key result/decision, confidence, and one concrete next action.",
-        "Do not use generic filler or marketing language.",
-        "Do not mention model, provider, or internal system details.",
+        "You are an operations analyst writing a deterministic go/no-go style recommendation.",
+        "Return exactly one short paragraph in this strict format:",
+        "MAKE_CHANGE: YES|NO. ACTION: <CONCRETE_ACTION>. REASON: <SPECIFIC_REASON_WITH_STATUS_AND_CONFIDENCE>.",
+        "Do not include any extra lines or vague suggestions.",
+        "Do not ask for more analysis. Make a direct recommendation.",
         'Return strict JSON with exactly one key: {"overallReview":"..."}'
       ].join("\n"),
       prompt: [

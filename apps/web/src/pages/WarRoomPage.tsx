@@ -47,6 +47,14 @@ type WarRoomInterpretation = {
   };
 };
 
+type AlertBoardItem = {
+  key: string;
+  timestamp: string;
+  title: string;
+  details: string;
+  tone: "rose" | "amber" | "emerald" | "slate";
+};
+
 function readString(value: unknown, fallback = "N/A") {
   return typeof value === "string" ? value : fallback;
 }
@@ -85,6 +93,9 @@ function readStepLabel(step: Record<string, unknown>) {
   if (typeof step.name === "string" && step.name.trim()) {
     return step.name.trim();
   }
+  if (typeof step.stepName === "string" && step.stepName.trim()) {
+    return step.stepName.trim();
+  }
   if (typeof step.stepId === "string" && step.stepId.trim()) {
     return step.stepId.trim();
   }
@@ -92,6 +103,17 @@ function readStepLabel(step: Record<string, unknown>) {
     return step.id.trim();
   }
   return "Step";
+}
+
+function formatStepStatus(status: string) {
+  const normalized = status.trim().toUpperCase();
+  if (!normalized) {
+    return "pending";
+  }
+  if (normalized === "WAITING_APPROVAL") {
+    return "waiting approval";
+  }
+  return normalized.toLowerCase();
 }
 
 function mergeEvents(current: WarRoomEvent[], incoming: WarRoomEvent[]) {
@@ -272,7 +294,6 @@ export function WarRoomPage() {
     return () => window.clearInterval(timer);
   }, [runId, token]);
 
-  const threatFeed = useMemo(() => events.filter((event) => event.type === "AGENT_ALERT"), [events]);
   const debateFeed = useMemo(() => events.filter((event) => event.type === "DEBATE_RESULT"), [events]);
   const timeline = useMemo(
     () => [...events].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)),
@@ -288,12 +309,28 @@ export function WarRoomPage() {
     }
     return ids;
   }, [activeSteps]);
+  const runningStepIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const step of activeSteps) {
+      const candidate = step.stepId ?? step.id;
+      const status = typeof step.status === "string" ? step.status : "";
+      if (typeof candidate === "string" && candidate.trim() && status === "RUNNING") {
+        ids.add(candidate);
+      }
+    }
+    return ids;
+  }, [activeSteps]);
   const workflowFlow = useMemo(() => {
     return runSteps
       .map((step) => {
         const stepId = typeof step.stepId === "string" ? step.stepId : "";
         const stepName = readStepLabel(step);
-        const kind = typeof step.kind === "string" ? step.kind : "STEP";
+        const kind =
+          typeof step.stepKind === "string"
+            ? step.stepKind
+            : typeof step.kind === "string"
+              ? step.kind
+              : "STEP";
         const status = typeof step.status === "string" ? step.status : "PENDING";
         if (!stepId) {
           return null;
@@ -313,6 +350,135 @@ export function WarRoomPage() {
     }
     return map;
   }, [runSteps]);
+  const waitingApprovalSteps = useMemo(() => {
+    return runSteps
+      .map((step) => {
+        const stepId = typeof step.stepId === "string" ? step.stepId : "";
+        const status = typeof step.status === "string" ? step.status : "";
+        if (!stepId || status !== "WAITING_APPROVAL") {
+          return null;
+        }
+        const kind = typeof step.kind === "string" ? step.kind : "STEP";
+        const label = readStepLabel(step);
+        return { stepId, kind, label };
+      })
+      .filter((item): item is { stepId: string; kind: string; label: string } => Boolean(item));
+  }, [runSteps]);
+  const alertBoard = useMemo(() => {
+    const rows: AlertBoardItem[] = [];
+    const pushed = new Set<string>();
+    const pushRow = (row: AlertBoardItem) => {
+      if (pushed.has(row.key)) {
+        return;
+      }
+      pushed.add(row.key);
+      rows.push(row);
+    };
+
+    for (const item of pendingDecisions) {
+      const label = stepLabelById.get(item.routerStepId) ?? item.routerStepId;
+      pushRow({
+        key: `pending-${item.id}`,
+        timestamp: item.requestedAt,
+        title: `Decision required: ${label}`,
+        details: "A router step is waiting for an approval or rejection.",
+        tone: "amber"
+      });
+    }
+
+    for (const item of waitingApprovalSteps) {
+      const relatedEvent = [...events]
+        .reverse()
+        .find((event) => event.stepId === item.stepId && event.type === "WORKFLOW_STATUS_UPDATE");
+      pushRow({
+        key: `waiting-step-${item.stepId}`,
+        timestamp: relatedEvent?.timestamp ?? "1970-01-01T00:00:00.000Z",
+        title: `Approval required: ${item.label}`,
+        details: `Step kind ${item.kind} is waiting for approver action.`,
+        tone: "amber"
+      });
+    }
+
+    for (const event of events) {
+      if (event.type === "AGENT_ALERT") {
+        const severityRaw = typeof event.payload.severity === "string" ? event.payload.severity.toLowerCase() : "medium";
+        const severity = severityRaw || "medium";
+        const tone =
+          severity === "critical" || severity === "high"
+            ? "rose"
+            : severity === "medium"
+              ? "amber"
+              : "slate";
+        pushRow({
+          key: `event-${event.id ?? `${event.timestamp}-${event.stepId ?? ""}`}`,
+          timestamp: event.timestamp,
+          title: readString(event.payload.summary, event.stepId ? stepLabelById.get(event.stepId) ?? event.stepId : "Agent alert"),
+          details: `Category: ${readString(event.payload.category, "general")} | Severity: ${severity} | Risk: ${readString(
+            event.payload.riskScore,
+            "n/a"
+          )}`,
+          tone
+        });
+        continue;
+      }
+
+      if (event.type === "ROUTER_DECISION_REQUIRED") {
+        const stepId = typeof event.payload.routerStepId === "string" ? event.payload.routerStepId : event.stepId;
+        const label = stepId ? stepLabelById.get(stepId) ?? stepId : "Router step";
+        pushRow({
+          key: `event-${event.id ?? `${event.timestamp}-${event.stepId ?? ""}`}`,
+          timestamp: event.timestamp,
+          title: `Decision required: ${label}`,
+          details: readString(event.payload.reason, "Router requires approval before evaluation."),
+          tone: "amber"
+        });
+        continue;
+      }
+
+      if (event.type === "WORKFLOW_STATUS_UPDATE") {
+        const waitingFor = typeof event.payload.waitingFor === "string" ? event.payload.waitingFor : "";
+        if (waitingFor === "APPROVAL_NODE" || waitingFor === "POLICY_GATE") {
+          const label = event.stepId ? stepLabelById.get(event.stepId) ?? event.stepId : "Approval step";
+          pushRow({
+            key: `event-${event.id ?? `${event.timestamp}-${event.stepId ?? ""}`}`,
+            timestamp: event.timestamp,
+            title: `Approval required: ${label}`,
+            details: `Waiting for ${waitingFor}.`,
+            tone: "amber"
+          });
+          continue;
+        }
+
+        const message = typeof event.payload.message === "string" ? event.payload.message : "";
+        const label = event.stepId ? stepLabelById.get(event.stepId) ?? event.stepId : "Step";
+        if (message.toLowerCase().startsWith("router decision received:")) {
+          const decision = message.split(":").slice(1).join(":").trim().toUpperCase() || "UNKNOWN";
+          pushRow({
+            key: `event-${event.id ?? `${event.timestamp}-${event.stepId ?? ""}`}`,
+            timestamp: event.timestamp,
+            title: `Decision submitted: ${decision}`,
+            details: `${label} resumed execution after decision.`,
+            tone: decision === "APPROVE" ? "emerald" : decision === "REJECT" ? "rose" : "slate"
+          });
+          continue;
+        }
+
+        if (message.toLowerCase().startsWith("approval decision received:")) {
+          const decision = message.split(":").slice(1).join(":").trim().toUpperCase() || "UNKNOWN";
+          const comment = typeof event.payload.comment === "string" && event.payload.comment.trim() ? ` | Comment: ${event.payload.comment}` : "";
+          pushRow({
+            key: `event-${event.id ?? `${event.timestamp}-${event.stepId ?? ""}`}`,
+            timestamp: event.timestamp,
+            title: `Approval decision: ${decision}`,
+            details: `${label} moved forward.${comment}`,
+            tone: decision === "APPROVE" ? "emerald" : decision === "REJECT" ? "rose" : "slate"
+          });
+        }
+      }
+    }
+
+    return rows.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  }, [events, pendingDecisions, stepLabelById, waitingApprovalSteps]);
   const recentEventCount = useMemo(() => {
     const now = Date.now();
     return timeline.filter((event) => now - Date.parse(event.timestamp) <= 120_000).length;
@@ -575,22 +741,30 @@ export function WarRoomPage() {
                       <div className="text-[11px] uppercase tracking-wide text-slate-500">{step.kind}</div>
                       <div className="text-sm font-medium text-slate-900">{step.label}</div>
                       <div className={["text-[11px]", isActive ? "text-emerald-700" : "text-slate-500"].join(" ")}>
-                        {isActive ? "processing" : step.status.toLowerCase()}
+                        {isActive ? "processing" : formatStepStatus(step.status)}
                       </div>
                     </article>
                     {index < workflowFlow.length - 1 ? (
                       <div className="relative h-2 w-20 overflow-hidden rounded-full bg-cyan-100 sm:w-28">
                         <div className="absolute inset-y-0 left-0 right-0 my-auto h-[2px] bg-cyan-300" />
-                        {Array.from({ length: requestsInFlight }).map((_, dotIndex) => (
-                          <span
-                            className="war-room-flow-dot absolute top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-cyan-500"
-                            key={`${step.id}-dot-${dotIndex}`}
-                            style={{
-                              animationDelay: `${dotIndex * 0.35}s`,
-                              animationDuration: `${2.2 + (dotIndex % 3) * 0.4}s`
-                            }}
-                          />
-                        ))}
+                        {(() => {
+                          const nextStep = workflowFlow[index + 1];
+                          const edgeActive = nextStep ? runningStepIds.has(nextStep.id) : false;
+                          if (!edgeActive) {
+                            return null;
+                          }
+                          const edgeDotCount = Math.min(4, Math.max(1, Math.ceil(requestsInFlight / 2)));
+                          return Array.from({ length: edgeDotCount }).map((_, dotIndex) => (
+                            <span
+                              className="war-room-flow-dot absolute top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-cyan-500"
+                              key={`${step.id}-dot-${dotIndex}`}
+                              style={{
+                                animationDelay: `${dotIndex * 0.35}s`,
+                                animationDuration: `${2.2 + (dotIndex % 3) * 0.4}s`
+                              }}
+                            />
+                          ));
+                        })()}
                       </div>
                     ) : null}
                   </div>
@@ -603,21 +777,32 @@ export function WarRoomPage() {
         </section>
 
         <section className="rounded border border-rose-200 bg-rose-50 p-4 xl:col-start-1 xl:row-start-1">
-          <h2 className="text-lg font-semibold text-rose-900">Threat Feed</h2>
+          <h2 className="text-lg font-semibold text-rose-900">Alert Board</h2>
           <div className="mt-3 space-y-2">
-            {threatFeed.map((event) => (
-              <article className="rounded border border-rose-200 bg-white p-3" key={`${event.id ?? event.timestamp}-${event.stepId ?? ""}`}>
-                <div className="text-sm font-medium text-slate-900">
-                  {readString(event.payload.summary, event.stepId ? stepLabelById.get(event.stepId) ?? event.stepId : "Agent alert")}
-                </div>
-                <div className="text-xs text-slate-500">{new Date(event.timestamp).toLocaleString()}</div>
-                <div className="mt-1 text-xs text-rose-800">
-                  Category: {readString(event.payload.category)} | Severity: {readString(event.payload.severity, "medium")} | Risk:{" "}
-                  {readString(event.payload.riskScore, "n/a")}
+            {alertBoard.map((item) => (
+              <article
+                className="rounded border bg-white p-3"
+                key={item.key}
+              >
+                <div className="text-sm font-medium text-slate-900">{item.title}</div>
+                <div className="text-xs text-slate-500">{new Date(item.timestamp).toLocaleString()}</div>
+                <div
+                  className={[
+                    "mt-1 text-xs",
+                    item.tone === "rose"
+                      ? "text-rose-800"
+                      : item.tone === "amber"
+                        ? "text-amber-800"
+                        : item.tone === "emerald"
+                          ? "text-emerald-800"
+                          : "text-slate-700"
+                  ].join(" ")}
+                >
+                  {item.details}
                 </div>
               </article>
             ))}
-            {threatFeed.length === 0 ? <p className="text-sm text-slate-500">No active alerts.</p> : null}
+            {alertBoard.length === 0 ? <p className="text-sm text-slate-500">No active alerts.</p> : null}
           </div>
         </section>
 

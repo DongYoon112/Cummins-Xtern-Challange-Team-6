@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { humanizeActionLabel } from "../lib/actionLabels";
 import type { RunState } from "../lib/types";
 
 type Approval = {
@@ -86,7 +87,7 @@ function buildApprovalInsight(approval: Approval): ApprovalInsight {
     confidence,
     ruleTriggers,
     primaryIssue,
-    recommendation: finalDecision,
+    recommendation: finalDecision ? humanizeActionLabel(finalDecision) : undefined,
     costImpactUSD
   };
 }

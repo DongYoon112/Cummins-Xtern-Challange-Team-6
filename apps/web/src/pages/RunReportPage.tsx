@@ -28,6 +28,7 @@ export function RunReportPage() {
   const { runId = "" } = useParams();
   const [run, setRun] = useState<RunState | null>(null);
   const [overallReview, setOverallReview] = useState<string>("");
+  const [whyThisMatters, setWhyThisMatters] = useState<string>("");
   const [overallReviewLoading, setOverallReviewLoading] = useState(false);
   const [overallReviewError, setOverallReviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -55,13 +56,14 @@ export function RunReportPage() {
     }
     setOverallReviewLoading(true);
     setOverallReviewError(null);
-    apiFetch<{ overallReview: string; provider: string; model: string; mockMode: boolean }>(
+    apiFetch<{ overallReview: string; whyThisMatters: string; provider: string; model: string; mockMode: boolean }>(
       `/runs/${encodeURIComponent(runId)}/overall-review`,
       { method: "POST", body: JSON.stringify({}) },
       token
     )
       .then((payload) => {
         setOverallReview(payload.overallReview);
+        setWhyThisMatters(payload.whyThisMatters);
       })
       .catch((err) => {
         setOverallReviewError(err instanceof Error ? err.message : "Failed to generate overall review");
@@ -175,7 +177,7 @@ export function RunReportPage() {
         {overallReviewError ? <p className="mt-1 text-xs text-warn">{overallReviewError}</p> : null}
         <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-3">
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Why this matters</div>
-          <p className="mt-1 text-sm text-slate-800">{report.headline}</p>
+          <p className="mt-1 text-sm text-slate-800">{overallReviewLoading ? "generating..." : whyThisMatters || report.headline}</p>
         </div>
         {insightCards.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">No key insights were detected from the run outputs.</p>

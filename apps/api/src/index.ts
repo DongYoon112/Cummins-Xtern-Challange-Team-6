@@ -451,6 +451,23 @@ function percentile(values: number[], p: number) {
   return sorted[index];
 }
 
+function humanizeActionLabel(value: string): string {
+  const normalized = value.trim().toUpperCase().replace(/\s+/g, "_");
+  const labels: Record<string, string> = {
+    DISPATCH_RESERVE: "Dispatch reserve capacity now",
+    MONITOR_GRID: "Monitor grid conditions",
+    ISSUE_ALERT: "Issue an operational alert",
+    CONTINUE_MONITORING: "Continue monitoring",
+    RECHECK_PROCESS: "Recheck process settings",
+    QUARANTINE_BATCH: "Quarantine affected batch",
+    SPLIT_ORDER: "Split the order",
+    EXPEDITE: "Expedite execution",
+    ESCALATE: "Escalate to operations lead",
+    MONITOR: "Monitor conditions"
+  };
+  return labels[normalized] ?? value;
+}
+
 function applyAuditFilters(
   records: Array<Record<string, unknown>>,
   filters: { eventType?: string; provider?: string; model?: string; fallbackOnly?: boolean }
@@ -1468,6 +1485,30 @@ app.post("/runs/:runId/overall-review", async (req, res) => {
         .find((step) => step.output && typeof step.output === "object" && step.output !== null)?.output as
         | Record<string, unknown>
         | undefined;
+      const decisionSnippets = run.steps
+        .filter((step) => step.status !== "PENDING")
+        .map((step) => {
+          if (!step.output || typeof step.output !== "object") {
+            return "";
+          }
+          const output = step.output as Record<string, unknown>;
+          const candidates = [
+            output.finalDecision,
+            output.finalRecommendation,
+            output.decision,
+            output.recommendation,
+            output.suggested_action,
+            output.recommended_action,
+            output.status
+          ];
+          const selected = candidates.find((value) => typeof value === "string" && value.trim()) as string | undefined;
+          if (!selected) {
+            return "";
+          }
+          return `${step.name}: ${humanizeActionLabel(selected.trim())}`.slice(0, 140);
+        })
+        .filter(Boolean)
+        .slice(0, 3);
       const decision =
         typeof finalOutput?.make_change === "string"
           ? finalOutput.make_change
@@ -1482,6 +1523,7 @@ app.post("/runs/:runId/overall-review", async (req, res) => {
             : "MONITOR";
       const confidence =
         [...run.steps].reverse().find((step) => typeof step.confidence === "number")?.confidence ?? null;
+      const suggestedActionLabel = humanizeActionLabel(suggestedAction);
       const yesNo =
         decision === "YES" || decision === "NO"
           ? decision
@@ -1489,7 +1531,25 @@ app.post("/runs/:runId/overall-review", async (req, res) => {
             ? "YES"
             : "NO";
       const confidenceText = typeof confidence === "number" ? confidence.toFixed(2) : "n/a";
-      return `MAKE_CHANGE: ${yesNo}. ACTION: ${suggestedAction}. REASON: Run status ${run.status} across ${doneSteps} executed step${doneSteps === 1 ? "" : "s"} (confidence ${confidenceText}).`;
+      const overviewText =
+        decisionSnippets.length > 0
+          ? decisionSnippets.map((snippet, index) => `${index + 1}) ${snippet}`).join(" ")
+          : `Run status is ${run.status} with ${doneSteps} executed step${doneSteps === 1 ? "" : "s"}.`;
+      const recommendationText =
+        yesNo === "YES"
+          ? `Proceed with the recommended change path (${suggestedActionLabel}).`
+          : "Do not apply a change yet; continue with controlled monitoring.";
+      const nextActions = [
+        `Execute ${suggestedActionLabel} with owner assignment and deadline.`,
+        "Validate impact by checking key run outputs and policy thresholds.",
+        "Log the decision and schedule a follow-up run."
+      ];
+      const overallReview = `Decision overview: ${overviewText} Recommendation: ${recommendationText} Next actions: 1) ${nextActions[0]} 2) ${nextActions[1]} 3) ${nextActions[2]} (confidence ${confidenceText}).`;
+      const whyThisMatters =
+        yesNo === "YES"
+          ? `The actionable path is ${suggestedActionLabel}; executing ${suggestedActionLabel} now is supported by confidence ${confidenceText} and reduces delay while preserving operational momentum.`
+          : `The actionable path is to keep MONITOR in place; avoiding immediate change at confidence ${confidenceText} protects reliability while additional evidence is gathered.`;
+      return { overallReview, whyThisMatters };
     })();
 
     if (!apiKey) {
@@ -1497,7 +1557,8 @@ app.post("/runs/:runId/overall-review", async (req, res) => {
         provider: "openai",
         model,
         mockMode: true,
-        overallReview: deterministicFallback
+        overallReview: deterministicFallback.overallReview,
+        whyThisMatters: deterministicFallback.whyThisMatters
       });
       return;
     }
@@ -1507,12 +1568,16 @@ app.post("/runs/:runId/overall-review", async (req, res) => {
       model,
       apiKey,
       systemPrompt: [
-        "You are an operations analyst writing a deterministic go/no-go style recommendation.",
-        "Return exactly one short paragraph in this strict format:",
-        "MAKE_CHANGE: YES|NO. ACTION: <CONCRETE_ACTION>. REASON: <SPECIFIC_REASON_WITH_STATUS_AND_CONFIDENCE>.",
-        "Do not include any extra lines or vague suggestions.",
-        "Do not ask for more analysis. Make a direct recommendation.",
-        'Return strict JSON with exactly one key: {"overallReview":"..."}'
+        "You are an operations analyst writing an executive run summary.",
+        "Return two concise strings for a workflow run report.",
+        "overallReview must be exactly one short paragraph in this strict format:",
+        "Decision overview: <2-3 concrete outcomes/decisions from this run>. Recommendation: <clear recommendation sentence>. Next actions: 1) <action> 2) <action> 3) <action>.",
+        "whyThisMatters must be exactly one sentence that explicitly names the actionable path (repeat the concrete action from the recommendation/next actions) and explains business impact/urgency.",
+        "Avoid generic phrases like 'the recommendation' or 'actionable path' without naming the specific action.",
+        "If action tokens appear (for example DISPATCH_RESERVE), rewrite them as plain English imperative actions (for example 'Dispatch reserve capacity now').",
+        "Do not use MAKE_CHANGE/ACTION/REASON labels.",
+        "Do not include extra lines, markdown, or vague advice.",
+        'Return strict JSON with exactly two keys: {"overallReview":"...","whyThisMatters":"..."}'
       ].join("\n"),
       prompt: [
         `Run metadata: ${JSON.stringify({
@@ -1526,16 +1591,20 @@ app.post("/runs/:runId/overall-review", async (req, res) => {
       ].join("\n\n")
     });
 
-    const overallReview =
-      llmObject && typeof llmObject.overallReview === "string" && llmObject.overallReview.trim()
-        ? llmObject.overallReview.trim()
-        : deterministicFallback;
+    const llmPayload = llmObject && typeof llmObject === "object" ? (llmObject as Record<string, unknown>) : null;
+    const overallReviewRaw = llmPayload?.overallReview;
+    const whyThisMattersRaw = llmPayload?.whyThisMatters;
+    const hasOverallReview = typeof overallReviewRaw === "string" && overallReviewRaw.trim().length > 0;
+    const hasWhyThisMatters = typeof whyThisMattersRaw === "string" && whyThisMattersRaw.trim().length > 0;
+    const overallReview = hasOverallReview ? overallReviewRaw.trim() : deterministicFallback.overallReview;
+    const whyThisMatters = hasWhyThisMatters ? whyThisMattersRaw.trim() : deterministicFallback.whyThisMatters;
 
     res.json({
       provider: "openai",
       model,
-      mockMode: overallReview === deterministicFallback,
-      overallReview
+      mockMode: !hasOverallReview || !hasWhyThisMatters,
+      overallReview,
+      whyThisMatters
     });
   } catch (error) {
     console.error(error);

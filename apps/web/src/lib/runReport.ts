@@ -1,4 +1,5 @@
 import type { RunState, RunStep } from "./types";
+import { humanizeActionLabel } from "./actionLabels";
 
 type Primitive = string | number | boolean | null | undefined;
 
@@ -87,6 +88,9 @@ function valueToDisplay(value: unknown): string {
     return "n/a";
   }
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    if (typeof value === "string") {
+      return toShortText(humanizeActionLabel(value));
+    }
     return toShortText(value);
   }
   if (Array.isArray(value)) {
@@ -95,7 +99,7 @@ function valueToDisplay(value: unknown): string {
     }
     const subset = value.slice(0, 3).map((entry) => {
       if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
-        return String(entry);
+        return typeof entry === "string" ? humanizeActionLabel(entry) : String(entry);
       }
       if (isRecord(entry)) {
         if (typeof entry.sensor === "string") {
@@ -205,7 +209,7 @@ export function summarizeStepOutput(step: RunStep): string {
         typeof output.finalRecommendation.confidence === "number"
           ? ` (${output.finalRecommendation.confidence.toFixed(2)})`
           : "";
-      return `Debate recommendation: ${decision}${confidence}`;
+      return `Debate recommendation: ${humanizeActionLabel(decision)}${confidence}`;
     }
     if (typeof output.primary_issue === "string" && output.primary_issue.trim()) {
       return `Primary issue: ${toShortText(output.primary_issue, 130)}`;
@@ -279,12 +283,13 @@ function deriveDbPersistence(run: RunState): DbPersistenceSummary {
 }
 
 function deriveFinalDecision(findings: Map<string, ReportFinding>) {
-  return (
+  const decision = (
     findings.get("decision")?.value ??
     findings.get("recommendedaction")?.value ??
     findings.get("finalrecommendation")?.value ??
     "n/a"
   );
+  return decision === "n/a" ? decision : humanizeActionLabel(decision);
 }
 
 function deriveConfidence(findings: Map<string, ReportFinding>, run: RunState) {

@@ -219,24 +219,27 @@ function buildGraphFromPublishedSteps(
     const rawId = step.id && step.id.trim() ? step.id : `node_${index + 1}`;
     const nodeId = `node_${rawId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
     const agent = String(step.agentName ?? "").toLowerCase();
-    const nodeType: WorkflowNodeType =
-      step.kind === "APPROVAL"
-        ? "router"
-        : step.kind === "ROUTER"
-          ? "router"
-        : agent.includes("datasetloader")
-          ? "dataset_loader"
-        : agent.includes("featurebuilder")
-          ? "feature_builder"
-        : agent.includes("dbwrite")
-          ? "db_write"
+    const explicitModeRaw = String(step.params?.llmNodeMode ?? "").toLowerCase();
+    const llmNodeMode =
+      step.kind === "APPROVAL" || step.kind === "ROUTER"
+        ? "orchestrator"
+        : explicitModeRaw === "summary_llm"
+          ? "summary_llm"
         : agent.includes("debate")
           ? "debate"
-        : agent.includes("logistics") || typeof step.params?.toolId === "string"
-          ? "tool"
-            : agent.includes("notification")
-              ? "output"
-              : "llm";
+          : "llm";
+    const nodeType: WorkflowNodeType =
+      agent.includes("datasetloader")
+        ? "dataset_loader"
+        : agent.includes("featurebuilder")
+          ? "feature_builder"
+          : agent.includes("dbwrite")
+            ? "db_write"
+            : agent.includes("logistics") || typeof step.params?.toolId === "string"
+              ? "tool"
+              : agent.includes("notification")
+                ? "output"
+                : "llm";
 
     nodes.push({
       id: nodeId,
@@ -244,7 +247,8 @@ function buildGraphFromPublishedSteps(
       position: { x: 340 + index * 240, y: 180 },
       config: {
         label: step.name ?? `Step ${index + 1}`,
-        ...(step.params ?? {})
+        ...(step.params ?? {}),
+        ...(nodeType === "llm" ? { llmNodeMode } : {})
       }
     });
 

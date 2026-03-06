@@ -31,6 +31,8 @@ export type WorkflowNodeType =
   | "db_write"
   | "output";
 
+export type LlmNodeMode = "llm" | "summary_llm" | "debate" | "orchestrator";
+
 export type WorkflowNode = {
   id: string;
   type: WorkflowNodeType;
@@ -166,7 +168,7 @@ function generateId(prefix: string) {
 
 export function createDefaultWorkflowConfig(): WorkflowConfig {
   const startId = generateId("node");
-  const debateId = generateId("node");
+  const llmId = generateId("node");
   const outputId = generateId("node");
 
   return {
@@ -187,12 +189,13 @@ export function createDefaultWorkflowConfig(): WorkflowConfig {
       nodes: [
         { id: startId, type: "start", position: { x: 100, y: 150 }, config: { label: "Start" } },
         {
-          id: debateId,
-          type: "debate",
+          id: llmId,
+          type: "llm",
           position: { x: 430, y: 150 },
           config: {
             label: "Debate",
             agentName: "Debate Agent",
+            llmNodeMode: "debate",
             llmProvider: "openai",
             llmModel: "gpt-4.1-mini",
             debateTopic: "Should we approve this plan based on risk, cost, and reliability?",
@@ -214,8 +217,8 @@ export function createDefaultWorkflowConfig(): WorkflowConfig {
         }
       ],
       edges: [
-        { id: generateId("edge"), source: startId, target: debateId },
-        { id: generateId("edge"), source: debateId, target: outputId }
+        { id: generateId("edge"), source: startId, target: llmId },
+        { id: generateId("edge"), source: llmId, target: outputId }
       ]
     }
   };

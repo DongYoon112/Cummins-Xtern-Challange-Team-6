@@ -103,15 +103,89 @@ function findStepOutputByPredicate(
   return null;
 }
 
+function buildSummarySource(runContext: Record<string, unknown>) {
+  const stepsValue = runContext.steps;
+  const stepEntries =
+    stepsValue && typeof stepsValue === "object"
+      ? Object.entries(stepsValue as Record<string, unknown>)
+          .map(([stepId, value]) => {
+            const item = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+            const output = item.output && typeof item.output === "object" ? (item.output as Record<string, unknown>) : null;
+            return {
+              stepId,
+              status: typeof item.status === "string" ? item.status : "UNKNOWN",
+              output
+            };
+          })
+          .slice(-8)
+      : [];
+
+  const findingKeys = [
+    "primary_issue",
+    "confidence",
+    "decision",
+    "finalRecommendation",
+    "recommended_actions",
+    "top_anomalies",
+    "dataset",
+    "unit_id",
+    "status",
+    "error"
+  ];
+
+  const findings: Record<string, unknown> = {};
+  for (const entry of stepEntries) {
+    if (!entry.output) {
+      continue;
+    }
+    for (const key of findingKeys) {
+      if (key in entry.output && findings[key] === undefined) {
+        findings[key] = entry.output[key];
+      }
+    }
+    if (entry.output.incident && typeof entry.output.incident === "object") {
+      const incident = entry.output.incident as Record<string, unknown>;
+      if (findings.dataset === undefined && typeof incident.dataset === "string") {
+        findings.dataset = incident.dataset;
+      }
+      if (findings.unit_id === undefined && typeof incident.unit_id === "number") {
+        findings.unit_id = incident.unit_id;
+      }
+    }
+  }
+
+  return {
+    runId: runContext.runId ?? null,
+    workflowId: runContext.workflowId ?? null,
+    lastSummary: runContext.lastSummary ?? null,
+    lastOutput:
+      runContext.lastOutput && typeof runContext.lastOutput === "object"
+        ? (runContext.lastOutput as Record<string, unknown>)
+        : runContext.lastOutput ?? null,
+    findings,
+    recentSteps: stepEntries.map((entry) => ({
+      stepId: entry.stepId,
+      status: entry.status,
+      output: entry.output
+    }))
+  };
+}
+
 async function insertIncidentPostgres(input: {
   connectionString: string;
   incident: Record<string, unknown>;
 }) {
   const moduleName = "pg";
   const pg = (await import(moduleName)) as { Pool: new (args: Record<string, unknown>) => any };
-  const pool = new pg.Pool({ connectionString: input.connectionString, max: 2 });
+  const pool = new pg.Pool({
+    connectionString: input.connectionString,
+    max: 2,
+    connectionTimeoutMillis: 5000,
+    idleTimeoutMillis: 5000
+  });
   const client = await pool.connect();
   try {
+    await client.query("SET statement_timeout = 10000");
     await client.query("BEGIN");
     await client.query(`
       CREATE TABLE IF NOT EXISTS engine_incidents (
@@ -614,6 +688,7 @@ export async function runTaskAgent(params: {
   }
 
   if (agentName === "LLM Agent") {
+    const llmNodeMode = String(stepParams.llmNodeMode ?? "llm").toLowerCase();
     const databaseMode =
       stepParams.toolId === "database" ||
       stepParams.toolHint === "database" ||
@@ -694,20 +769,30 @@ export async function runTaskAgent(params: {
         ? stepParams.prompt
         : typeof stepParams.question === "string" && stepParams.question.trim()
           ? stepParams.question
-          : "Summarize the run context and provide the most important next action.";
+          : llmNodeMode === "summary_llm"
+            ? "Write a clear summary of the workflow result for a non-technical user."
+            : "Summarize the run context and provide the most important next action.";
     const prompt = renderPromptTemplate(rawPrompt, runContext);
     const systemPrompt =
       typeof stepParams.systemPrompt === "string" && stepParams.systemPrompt.trim()
         ? stepParams.systemPrompt.trim()
-        : "You are a precise operations assistant. Keep responses concise.";
+        : llmNodeMode === "summary_llm"
+          ? "You explain workflow results clearly for business users."
+          : "You are a precise operations assistant. Keep responses concise.";
 
     if (!apiKey) {
+      const summaryFallback =
+        llmNodeMode === "summary_llm"
+          ? "Summary unavailable because no LLM API key is configured. Configure an OpenAI key to enable result summaries."
+          : `Mock response: ${prompt}`;
       return {
         output: {
           provider,
           model,
+          llmNodeMode,
           prompt,
-          answer: `Mock response: ${prompt}`,
+          answer: summaryFallback,
+          overallSummary: llmNodeMode === "summary_llm" ? summaryFallback : undefined,
           mockMode: true,
           llm_execution: {
             provider,
@@ -721,6 +806,101 @@ export async function runTaskAgent(params: {
         rationale: `No ${provider} API key configured. Returned mock LLM output.`,
         toolCalls,
         mockMode: true
+      };
+    }
+
+    if (llmNodeMode === "summary_llm") {
+      const summarySource = buildSummarySource(runContext);
+      const fallbackSummary = (() => {
+        const findings = summarySource.findings;
+        const primaryIssue =
+          typeof findings.primary_issue === "string" && findings.primary_issue.trim()
+            ? findings.primary_issue
+            : "an issue";
+        const decision =
+          typeof findings.decision === "string"
+            ? findings.decision
+            : findings.finalRecommendation &&
+                typeof findings.finalRecommendation === "object" &&
+                typeof (findings.finalRecommendation as Record<string, unknown>).decision === "string"
+              ? String((findings.finalRecommendation as Record<string, unknown>).decision)
+              : null;
+        const confidence =
+          typeof findings.confidence === "number"
+            ? findings.confidence
+            : typeof (summarySource.lastOutput as Record<string, unknown> | null)?.confidence === "number"
+              ? Number((summarySource.lastOutput as Record<string, unknown>).confidence)
+              : null;
+        const first = `The workflow finished and identified ${primaryIssue}.`;
+        const second = decision
+          ? `The final decision was ${decision}${typeof confidence === "number" ? ` with confidence ${confidence.toFixed(2)}` : ""}.`
+          : typeof confidence === "number"
+            ? `The result confidence was ${confidence.toFixed(2)}.`
+            : "No final decision was reported.";
+        return `${first} ${second}`;
+      })();
+
+      const objectResult = await providerClient.askProviderForObject({
+        provider,
+        model,
+        apiKey,
+        systemPrompt: [
+          systemPrompt,
+          "Write an understandable result summary for operators.",
+          "Use 3-4 short sentences.",
+          "Cover what happened, key result, confidence/decision, and next action.",
+          "Avoid generic filler language.",
+          'Return strict JSON: {"overallSummary":"string","nextAction":"string"}'
+        ].join("\n"),
+        prompt: [
+          `User goal: ${prompt}`,
+          `Run summary source: ${JSON.stringify(summarySource).slice(0, 9000)}`,
+          dbOutput ? `Database result: ${JSON.stringify(dbOutput).slice(0, 2000)}` : ""
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      });
+
+      toolCalls.push({
+        server: provider,
+        tool: "chat.completions",
+        args: {
+          model,
+          llmNodeMode: "summary_llm"
+        }
+      });
+
+      const overallSummary =
+        objectResult && typeof objectResult.overallSummary === "string" && objectResult.overallSummary.trim()
+          ? objectResult.overallSummary.trim()
+          : fallbackSummary;
+      const nextAction =
+        objectResult && typeof objectResult.nextAction === "string" && objectResult.nextAction.trim()
+          ? objectResult.nextAction.trim()
+          : "";
+
+      return {
+        output: {
+          provider,
+          model,
+          llmNodeMode,
+          prompt,
+          database: dbOutput ?? null,
+          answer: overallSummary,
+          overallSummary,
+          nextAction: nextAction || null,
+          mockMode: false,
+          llm_execution: {
+            provider,
+            model,
+            llm_used: true,
+            mock_mode: false
+          }
+        },
+        confidence: 0.85,
+        rationale: "Generated user-facing summary from workflow results.",
+        toolCalls,
+        mockMode: false
       };
     }
 
@@ -746,6 +926,7 @@ export async function runTaskAgent(params: {
         output: {
           provider,
           model,
+          llmNodeMode,
           prompt,
           database: dbOutput ?? null,
           answer: "Provider call failed. No response envelope returned.",
@@ -769,6 +950,7 @@ export async function runTaskAgent(params: {
       output: {
         provider,
         model,
+        llmNodeMode,
         prompt,
         database: dbOutput ?? null,
         answer: envelope.summary,
@@ -1072,6 +1254,18 @@ export async function runTaskAgent(params: {
   if (agentName === "Debate Agent") {
     const warnings: string[] = [];
     const debateConfig = stepParams as DebateNodeConfig & { arbiter?: Record<string, unknown> };
+    const requestedMainProvider = String(
+      stepParams.llmProvider ?? (debateConfig as Record<string, unknown>).llmProvider ?? teamSettings.defaultProvider
+    ).toLowerCase();
+    const mainProvider: Provider = isProvider(requestedMainProvider) ? requestedMainProvider : teamSettings.defaultProvider;
+    const requestedMainModel = String(
+      stepParams.llmModel ??
+        (debateConfig as Record<string, unknown>).llmModel ??
+        (teamSettings.defaultProvider === mainProvider ? teamSettings.defaultModel : DEFAULT_MODELS[mainProvider])
+    ).trim();
+    const mainModel =
+      requestedMainModel ||
+      (teamSettings.defaultProvider === mainProvider ? teamSettings.defaultModel : DEFAULT_MODELS[mainProvider]);
     const topicTemplate = String(
       debateConfig.debateTopic ??
         stepParams.prompt ??
@@ -1094,8 +1288,8 @@ export async function runTaskAgent(params: {
       {
         id: "risk",
         label: "Risk Analyst",
-        provider: "openai" as Provider,
-        model: teamSettings.defaultProvider === "openai" ? teamSettings.defaultModel : DEFAULT_MODELS.openai,
+        provider: mainProvider,
+        model: mainModel,
         stance: "BLOCK" as DebateStance,
         systemPrompt: "You are a risk analyst focused on downside prevention and safety controls.",
         weight: 1
@@ -1103,8 +1297,8 @@ export async function runTaskAgent(params: {
       {
         id: "cost",
         label: "Cost Optimizer",
-        provider: "anthropic" as Provider,
-        model: teamSettings.defaultProvider === "anthropic" ? teamSettings.defaultModel : DEFAULT_MODELS.anthropic,
+        provider: mainProvider,
+        model: mainModel,
         stance: "APPROVE" as DebateStance,
         systemPrompt: "You are a cost optimizer focused on speed and budget efficiency.",
         weight: 1
@@ -1112,8 +1306,8 @@ export async function runTaskAgent(params: {
       {
         id: "ops",
         label: "Ops Reliability",
-        provider: "gemini" as Provider,
-        model: teamSettings.defaultProvider === "gemini" ? teamSettings.defaultModel : DEFAULT_MODELS.gemini,
+        provider: mainProvider,
+        model: mainModel,
         stance: "CONDITIONAL" as DebateStance,
         systemPrompt: "You are an operations reliability lead balancing uptime and execution constraints.",
         weight: 1
@@ -1125,10 +1319,11 @@ export async function runTaskAgent(params: {
           .map((entry) => (entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null))
           .filter((entry): entry is Record<string, unknown> => Boolean(entry))
           .map((entry, index) => {
-            const provider = String(entry.provider ?? "").toLowerCase();
-            if (!isProvider(provider)) {
-              warnings.push(`participants[${index}] ignored: unsupported provider "${provider}".`);
-              return null;
+            const requestedProvider = String(entry.provider ?? "").toLowerCase();
+            if (requestedProvider && requestedProvider !== mainProvider) {
+              warnings.push(
+                `participants[${index}] provider "${requestedProvider}" overridden to "${mainProvider}" (main provider policy).`
+              );
             }
             const stance = String(entry.stance ?? "").toUpperCase();
             if (!isDebateStance(stance)) {
@@ -1137,17 +1332,19 @@ export async function runTaskAgent(params: {
             }
             const id = String(entry.id ?? `participant_${index + 1}`).trim() || `participant_${index + 1}`;
             const label = String(entry.label ?? id).trim() || id;
-            const model = String(
-              entry.model ??
-                (teamSettings.defaultProvider === provider ? teamSettings.defaultModel : DEFAULT_MODELS[provider])
-            ).trim();
+            const requestedModel = String(entry.model ?? "").trim();
+            if (requestedModel && requestedModel !== mainModel) {
+              warnings.push(
+                `participants[${index}] model "${requestedModel}" overridden to "${mainModel}" (main provider policy).`
+              );
+            }
             const weight = Math.max(0.1, Number(entry.weight ?? 1) || 1);
             const systemPrompt = typeof entry.systemPrompt === "string" ? entry.systemPrompt : "";
             return {
               id,
               label,
-              provider,
-              model,
+              provider: mainProvider,
+              model: mainModel,
               stance,
               weight,
               systemPrompt
@@ -1340,14 +1537,16 @@ export async function runTaskAgent(params: {
         ? (debateConfig.arbiter as Record<string, unknown>)
         : {};
     const arbiterEnabled = arbiterConfig.enabled !== false;
-    const providerOrder: Provider[] = ["openai", "anthropic", "gemini"];
-    const firstAvailableProvider = providerOrder.find((provider) => Boolean(teamSettings.keys[provider]));
-    const arbiterProviderRaw = String(arbiterConfig.provider ?? firstAvailableProvider ?? teamSettings.defaultProvider).toLowerCase();
-    const arbiterProvider = isProvider(arbiterProviderRaw) ? arbiterProviderRaw : teamSettings.defaultProvider;
-    const arbiterModel = String(
-      arbiterConfig.model ??
-        (teamSettings.defaultProvider === arbiterProvider ? teamSettings.defaultModel : DEFAULT_MODELS[arbiterProvider])
-    );
+    const arbiterRequestedProvider = String(arbiterConfig.provider ?? "").toLowerCase();
+    if (arbiterRequestedProvider && arbiterRequestedProvider !== mainProvider) {
+      warnings.push(`arbiter provider "${arbiterRequestedProvider}" overridden to "${mainProvider}" (main provider policy).`);
+    }
+    const arbiterRequestedModel = String(arbiterConfig.model ?? "").trim();
+    if (arbiterRequestedModel && arbiterRequestedModel !== mainModel) {
+      warnings.push(`arbiter model "${arbiterRequestedModel}" overridden to "${mainModel}" (main provider policy).`);
+    }
+    const arbiterProvider = mainProvider;
+    const arbiterModel = mainModel;
     const arbiterSystemTemplate =
       typeof arbiterConfig.systemPrompt === "string" && arbiterConfig.systemPrompt.trim()
         ? arbiterConfig.systemPrompt

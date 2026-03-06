@@ -665,8 +665,9 @@ export class OrchestratorService {
         timestamp: startedAt
       });
 
-      const resolved = this.resolveStepParams(step, runtimeContext);
-      const resolvedParams = resolved.value as Record<string, unknown>;
+      try {
+        const resolved = this.resolveStepParams(step, runtimeContext);
+        const resolvedParams = resolved.value as Record<string, unknown>;
 
       if (step.kind === "APPROVAL") {
         const approvalId = this.requestApproval({
@@ -974,18 +975,49 @@ export class OrchestratorService {
       run.currentStepIndex = nextStepId && nextIndex >= 0 ? nextIndex : idx + 1;
       await this.persistRun(run, actor);
       await this.upsertStepSnapshot(actor, run, step, { startedAt, finishedAt: new Date().toISOString() });
-      await this.emitWarRoomEvent(actor, {
-        runId: run.runId,
-        workflowId: run.workflowId,
-        stepId: step.stepId,
-        type: "WORKFLOW_STATUS_UPDATE",
-        payload: {
-          status: run.status,
+        await this.emitWarRoomEvent(actor, {
+          runId: run.runId,
+          workflowId: run.workflowId,
           stepId: step.stepId,
-          stepName: step.name,
-          stepStatus: step.status
-        }
-      });
+          type: "WORKFLOW_STATUS_UPDATE",
+          payload: {
+            status: run.status,
+            stepId: step.stepId,
+            stepName: step.name,
+            stepStatus: step.status
+          }
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown step execution error";
+        const finishedAt = new Date().toISOString();
+        step.status = "FAILED";
+        step.rationale = message;
+        run.status = "FAILED";
+        run.error = message;
+        run.completedAt = finishedAt;
+        runtimeContext.steps[step.stepId] = {
+          ...(runtimeContext.steps[step.stepId] ?? {}),
+          status: "FAILED",
+          endedAt: finishedAt
+        };
+        await this.persistRun(run, actor);
+        await this.upsertStepSnapshot(actor, run, step, { startedAt, finishedAt });
+        await this.emitWarRoomEvent(actor, {
+          runId: run.runId,
+          workflowId: run.workflowId,
+          stepId: step.stepId,
+          type: "WORKFLOW_STATUS_UPDATE",
+          payload: {
+            status: run.status,
+            stepId: step.stepId,
+            stepName: step.name,
+            stepStatus: "FAILED",
+            error: message
+          },
+          timestamp: finishedAt
+        });
+        return;
+      }
     }
 
     run.status = "COMPLETED";

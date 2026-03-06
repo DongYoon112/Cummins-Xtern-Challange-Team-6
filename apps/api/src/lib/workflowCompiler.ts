@@ -40,9 +40,24 @@ type RouterRoute = {
   toNodeId: string;
 };
 
+function resolveLlmNodeMode(node: DraftNode): "llm" | "summary_llm" | "debate" | "orchestrator" {
+  if (node.type === "debate") {
+    return "debate";
+  }
+  if (node.type === "router") {
+    return "orchestrator";
+  }
+  const raw = String(node.config.llmNodeMode ?? "llm").toLowerCase();
+  if (raw === "debate" || raw === "orchestrator" || raw === "summary_llm") {
+    return raw;
+  }
+  return "llm";
+}
+
 function inferAgentName(node: DraftNode) {
   const explicit = node.config.agentName;
-  if (node.type === "debate") {
+  const llmNodeMode = resolveLlmNodeMode(node);
+  if (node.type === "debate" || (node.type === "llm" && llmNodeMode === "debate")) {
     if (explicit === "CMAPSS Debate Agent" || explicit === "Debate Agent") {
       return explicit;
     }
@@ -154,7 +169,8 @@ export function compileWorkflowDraft(config: DraftConfig): CompileResult {
 
   const steps: WorkflowStep[] = ordered.map((node) => {
     const outgoing = (adjacency.get(node.id) ?? []).filter((target) => nodeById.has(target));
-    const isRouter = node.type === "router";
+    const llmNodeMode = resolveLlmNodeMode(node);
+    const isRouter = node.type === "router" || (node.type === "llm" && llmNodeMode === "orchestrator");
     const isApproval = node.type === "approval";
     const toolId = typeof node.config.toolId === "string" ? node.config.toolId : "";
     const linkedToolConfig = toolId ? toolConfigById.get(toolId) : undefined;

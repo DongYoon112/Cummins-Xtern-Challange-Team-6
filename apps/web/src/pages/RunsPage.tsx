@@ -329,18 +329,38 @@ export function RunsPage() {
         </button>
         <div className="space-y-2">
           {runs.map((run) => (
-            <button
+            <div
               className={`w-full rounded border px-3 py-2 text-left text-sm ${
                 selectedRunId === run.runId ? "border-accent bg-orange-50" : "border-slate-200"
               }`}
               key={run.runId}
-              onClick={() => setSelectedRunId(run.runId)}
-              type="button"
             >
-              <div className="font-medium">{run.workflowName}</div>
-              <div className="text-xs text-slate-500">{run.runId}</div>
-              <div className="mt-1 text-xs">Status: {run.status}</div>
-            </button>
+              <button className="w-full text-left" onClick={() => setSelectedRunId(run.runId)} type="button">
+                <div className="font-medium">{run.workflowName}</div>
+                <div className="text-xs text-slate-500">{run.runId}</div>
+                <div className="mt-1 text-xs">Status: {run.status}</div>
+              </button>
+              <div className="mt-2 flex gap-2">
+                {run.status === "COMPLETED" ? (
+                  <button
+                    className="rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white"
+                    onClick={() => navigate(`/runs/${encodeURIComponent(run.runId)}/report`)}
+                    type="button"
+                  >
+                    Check Report
+                  </button>
+                ) : null}
+                {(run.status === "FAILED" || run.status === "REJECTED") ? (
+                  <button
+                    className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                    onClick={() => navigate(`/runs/${encodeURIComponent(run.runId)}/report`)}
+                    type="button"
+                  >
+                    View Report
+                  </button>
+                ) : null}
+              </div>
+            </div>
           ))}
           {runs.length === 0 ? <p className="text-sm text-slate-500">No runs yet.</p> : null}
         </div>
@@ -367,6 +387,18 @@ export function RunsPage() {
                 <div className="font-medium">{activeRun.status}</div>
               </div>
             </div>
+
+            {(activeRun.status === "COMPLETED" || activeRun.status === "FAILED" || activeRun.status === "REJECTED") ? (
+              <div className="mb-3">
+                <button
+                  className="rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white"
+                  onClick={() => navigate(`/runs/${encodeURIComponent(activeRun.runId)}/report`)}
+                  type="button"
+                >
+                  {activeRun.status === "COMPLETED" ? "Check Report" : "View Report"}
+                </button>
+              </div>
+            ) : null}
 
             <div className="mb-3 rounded border border-slate-200 bg-slate-50 p-3">
               {runResult ? (

@@ -58,6 +58,23 @@ const NODE_TYPE_LABELS: Record<WorkflowNodeType, string> = {
   output: "Output"
 };
 
+function getNodeModeBadge(node: WorkflowNode) {
+  if (node.type !== "llm") {
+    return node.type;
+  }
+  const mode = String(node.config.llmNodeMode ?? "llm").toLowerCase();
+  if (mode === "debate") {
+    return "debate";
+  }
+  if (mode === "orchestrator") {
+    return "orchestrator";
+  }
+  if (mode === "summary_llm") {
+    return "summary";
+  }
+  return "llm";
+}
+
 function nextId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -153,7 +170,10 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
           x: Math.round((260 - viewportRef.current.x) / viewportRef.current.scale),
           y: Math.round((180 - viewportRef.current.y) / viewportRef.current.scale)
         },
-        config: { label: NODE_TYPE_LABELS[type], description: "" }
+        config:
+          type === "llm"
+            ? { label: NODE_TYPE_LABELS[type], description: "", llmNodeMode: "llm" }
+            : { label: NODE_TYPE_LABELS[type], description: "" }
       };
       return {
         ...current,
@@ -414,9 +434,7 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
                     "start",
                     "llm",
                     "tool",
-                    "router",
                     "memory",
-                    "debate",
                     "dataset_loader",
                     "feature_builder",
                     "db_write",
@@ -586,7 +604,7 @@ export function FlowBuilder({ config, onConfigChange }: FlowBuilderProps) {
                       >
                         <div className="flex items-center justify-between">
                           <span className="font-semibold">{label}</span>
-                          <span className="text-[10px] uppercase text-slate-500">{node.type}</span>
+                          <span className="text-[10px] uppercase text-slate-500">{getNodeModeBadge(node)}</span>
                         </div>
                         {description ? (
                           <div className="mt-1 truncate text-[11px] text-slate-600" title={description}>

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   LLM_MODEL_OPTIONS,
   getDefaultModelForProvider,
+  type LlmNodeMode,
   type LlmProvider,
   type ToolId,
   type WorkflowNode,
@@ -16,12 +17,37 @@ type ConfigDrawerProps = {
   onDeleteNode: (nodeId: string) => void;
 };
 
-function getNodeTitle(type: WorkflowNode["type"]) {
-  switch (type) {
+function resolveLlmNodeMode(node: WorkflowNode): LlmNodeMode {
+  if (node.type === "debate") {
+    return "debate";
+  }
+  if (node.type === "router") {
+    return "orchestrator";
+  }
+  const raw = String(node.config.llmNodeMode ?? "llm").toLowerCase();
+  if (raw === "debate" || raw === "orchestrator" || raw === "summary_llm") {
+    return raw;
+  }
+  return "llm";
+}
+
+function getNodeTitle(node: WorkflowNode) {
+  if (node.type === "llm") {
+    const mode = resolveLlmNodeMode(node);
+    if (mode === "summary_llm") {
+      return "LLM Node (Summary)";
+    }
+    if (mode === "debate") {
+      return "LLM Node (Debate)";
+    }
+    if (mode === "orchestrator") {
+      return "LLM Node (Orchestrator)";
+    }
+    return "LLM Node";
+  }
+  switch (node.type) {
     case "start":
       return "Start Node";
-    case "llm":
-      return "LLM Node";
     case "tool":
       return "Tool Node";
     case "router":
@@ -49,6 +75,16 @@ function getNodeDescriptionSummary(node: WorkflowNode, tools: WorkflowTool[]) {
   }
 
   if (node.type === "llm") {
+    const mode = resolveLlmNodeMode(node);
+    if (mode === "summary_llm") {
+      return "Summarizes workflow results into clear user-facing sentences focused on outcome, confidence, and next action.";
+    }
+    if (mode === "debate") {
+      return "Runs a multi-agent debate to compare alternatives before selecting a recommendation.";
+    }
+    if (mode === "orchestrator") {
+      return "Evaluates routing rules and orchestrates the next path through the workflow.";
+    }
     const provider = String(node.config.llmProvider ?? "").trim();
     const model = String(node.config.llmModel ?? "").trim();
     if (provider && model) {
@@ -121,6 +157,7 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
   const linkedToolId = String(node.config.toolId ?? "");
   const llmProvider = String(node.config.llmProvider ?? "");
   const llmModel = String(node.config.llmModel ?? "");
+  const llmNodeMode = resolveLlmNodeMode(node);
   const llmPrompt = String(node.config.prompt ?? "");
   const llmSystemPrompt = String(node.config.systemPrompt ?? "");
   const llmQuery = String(node.config.query ?? "");
@@ -181,6 +218,7 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
   const cacheDir = String(node.config.cache_dir ?? "./data/CMAPSS");
   const slopeWindow = String(node.config.slope_window ?? "10");
   const dbTarget = String(node.config.db_target ?? "postgres");
+  const dbConnectionString = String(node.config.connectionString ?? "");
   const sqlitePath = String(node.config.sqlite_path ?? "./data/engine-incidents.db");
   const nodeDescriptionSummary = getNodeDescriptionSummary(node, tools);
 
@@ -188,7 +226,7 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
     <aside className="h-full space-y-3 rounded border border-slate-200 bg-white p-4 xl:overflow-auto">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold">{getNodeTitle(node.type)}</h3>
+          <h3 className="text-sm font-semibold">{getNodeTitle(node)}</h3>
           <div className="text-xs text-slate-500">id: {node.id}</div>
         </div>
         <button className="rounded border border-slate-300 px-2 py-1 text-xs" onClick={onClose} type="button">
@@ -222,6 +260,36 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
       </label>
 
       {node.type === "llm" ? (
+        <label className="block text-xs">
+          <div className="mb-1 text-slate-600">LLM Node Mode</div>
+          <select
+            className="w-full rounded border border-slate-300 px-2 py-1"
+            onChange={(event) => {
+              const nextMode = event.target.value as LlmNodeMode;
+              onUpdateNode(node.id, {
+                config: {
+                  ...node.config,
+                  llmNodeMode: nextMode,
+                  ...(nextMode === "summary_llm" ? { agentName: "LLM Agent", label: String(node.config.label ?? "Summary LLM") } : {}),
+                  ...(nextMode === "debate" ? { agentName: "Debate Agent" } : {}),
+                  ...(nextMode === "orchestrator" ? { routes: routes.length > 0 ? routes : [] } : {})
+                }
+              });
+            }}
+            value={llmNodeMode}
+          >
+            <option value="llm">LLM</option>
+            <option value="summary_llm">Summary LLM</option>
+            <option value="debate">Debate</option>
+            <option value="orchestrator">Orchestrator</option>
+          </select>
+          <div className="mt-1 text-[11px] text-slate-500">
+            One node type, four behaviors. Choose how this LLM node executes.
+          </div>
+        </label>
+      ) : null}
+
+      {node.type === "llm" && (llmNodeMode === "llm" || llmNodeMode === "summary_llm") ? (
         <div className="grid grid-cols-1 gap-2">
           <label className="text-xs">
             <div className="mb-1 text-slate-600">LLM Provider</div>
@@ -280,6 +348,11 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
               rows={4}
               value={llmPrompt}
             />
+            {llmNodeMode === "summary_llm" ? (
+              <div className="mt-1 text-[11px] text-slate-500">
+                `summary_llm` is optimized for plain-language result summaries. Leave Prompt blank to use the default summary template.
+              </div>
+            ) : null}
           </label>
           <label className="text-xs">
             <div className="mb-1 text-slate-600">System Prompt (optional)</div>
@@ -453,7 +526,7 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
         </div>
       ) : null}
 
-      {node.type === "router" ? (
+      {node.type === "router" || (node.type === "llm" && llmNodeMode === "orchestrator") ? (
         <div className="space-y-2">
           <label className="block text-xs">
             <div className="mb-1 text-slate-600">Condition (legacy)</div>
@@ -568,7 +641,7 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
         </div>
       ) : null}
 
-      {node.type === "debate" ? (
+      {node.type === "debate" || (node.type === "llm" && llmNodeMode === "debate") ? (
         <div className="space-y-2">
           <label className="block text-xs">
             <div className="mb-1 text-slate-600">Debate Agent</div>
@@ -855,6 +928,17 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
             </select>
           </label>
           <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Postgres Connection String (optional override)</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, connectionString: event.target.value } })
+              }
+              placeholder="postgresql://user:password@host:5432/dbname"
+              value={dbConnectionString}
+            />
+          </label>
+          <label className="block text-xs">
             <div className="mb-1 text-slate-600">SQLite Path (optional fallback)</div>
             <input
               className="w-full rounded border border-slate-300 px-2 py-1"
@@ -864,7 +948,8 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
             />
           </label>
           <div className="text-[11px] text-slate-500">
-            Uses <code>DATABASE_URL</code> for postgres and local file for sqlite.
+            If Postgres connection string is blank, <code>DATABASE_URL</code> is used. SQLite path is used only when target is
+            <code> sqlite</code>.
           </div>
         </div>
       ) : null}

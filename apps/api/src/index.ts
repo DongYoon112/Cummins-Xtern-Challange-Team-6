@@ -13,7 +13,7 @@ import { authRequired, signToken } from "./lib/auth";
 import { requireRoles } from "./lib/rbac";
 import { callMcpTool } from "./lib/mcpClient";
 import { getTeamSettingsForClient, getTeamSettingsForServer, saveExternalDbUrl, saveProviderKey, updateProviderDefaults } from "./lib/settings";
-import { testProviderConnection } from "./lib/providers";
+import { askProviderForObject, testProviderConnection } from "./lib/providers";
 import { orchestrator } from "./agents/orchestrator";
 import { compileWorkflowDraft } from "./lib/workflowCompiler";
 import { DraftGenerateInputSchema, generateWorkflowDraft } from "./lib/draftGenerator";
@@ -1334,6 +1334,150 @@ app.get("/runs/:runId", async (req, res) => {
   }
 });
 
+app.get("/runs/:runId/report", async (req, res) => {
+  try {
+    const run = await orchestrator.getRun(req.params.runId, req.user!.teamId);
+    if (!run) {
+      res.status(404).json({ error: "Run not found" });
+      return;
+    }
+
+    const executedSteps = run.steps.filter((step) => step.status !== "PENDING");
+    const approvalsTriggered = new Set(run.steps.map((step) => step.approvalId).filter(Boolean)).size;
+    const finalStepWithOutput = [...run.steps].reverse().find((step) => Boolean(step.output));
+    const finalDecision =
+      (finalStepWithOutput?.output &&
+      typeof finalStepWithOutput.output === "object" &&
+      finalStepWithOutput.output !== null &&
+      typeof (finalStepWithOutput.output as Record<string, unknown>).decision === "string"
+        ? String((finalStepWithOutput.output as Record<string, unknown>).decision)
+        : undefined) ?? null;
+    const confidence =
+      [...run.steps].reverse().find((step) => typeof step.confidence === "number")?.confidence ?? null;
+
+    res.json({
+      run,
+      report: {
+        runId: run.runId,
+        workflowId: run.workflowId,
+        workflowName: run.workflowName,
+        status: run.status,
+        startedAt: run.startedAt,
+        finishedAt: run.completedAt ?? run.updatedAt,
+        totalSteps: run.steps.length,
+        executedSteps: executedSteps.length,
+        approvalsTriggered,
+        finalDecision,
+        confidence
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to load run report" });
+  }
+});
+
+app.post("/runs/:runId/overall-review", async (req, res) => {
+  const requestSchema = z.object({
+    repoId: z.string().min(1).optional()
+  });
+  const parsed = requestSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid overall review payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const run = await orchestrator.getRun(req.params.runId, req.user!.teamId);
+    if (!run) {
+      res.status(404).json({ error: "Run not found" });
+      return;
+    }
+
+    const settings = getTeamSettingsForServer(req.user!.teamId, parsed.data.repoId);
+    const model = settings.defaultProvider === "openai" ? settings.defaultModel : "gpt-4.1-mini";
+    const apiKey = settings.keys.openai;
+    const steps = run.steps.map((step, index) => ({
+      index: index + 1,
+      name: step.name,
+      kind: step.kind,
+      status: step.status,
+      agentName: step.agentName,
+      confidence: step.confidence ?? null,
+      rationale: step.rationale ?? null,
+      output: step.output ?? null
+    }));
+
+    const deterministicFallback = (() => {
+      const doneSteps = run.steps.filter((step) => step.status !== "PENDING").length;
+      const finalDecision = [...run.steps]
+        .reverse()
+        .find((step) => step.output && typeof step.output === "object" && step.output !== null)?.output as
+        | Record<string, unknown>
+        | undefined;
+      const decision = typeof finalDecision?.decision === "string" ? finalDecision.decision : null;
+      const confidence =
+        [...run.steps].reverse().find((step) => typeof step.confidence === "number")?.confidence ?? null;
+      const firstSentence = `This run completed with status ${run.status} after ${doneSteps} executed step${doneSteps === 1 ? "" : "s"}.`;
+      const secondSentence = decision
+        ? `The final decision was ${decision}${typeof confidence === "number" ? ` with confidence ${confidence.toFixed(2)}` : ""}.`
+        : typeof confidence === "number"
+          ? `The final confidence reported was ${confidence.toFixed(2)}.`
+          : "No final decision was reported.";
+      return `${firstSentence} ${secondSentence}`;
+    })();
+
+    if (!apiKey) {
+      res.json({
+        provider: "openai",
+        model,
+        mockMode: true,
+        overallReview: deterministicFallback
+      });
+      return;
+    }
+
+    const llmObject = await askProviderForObject({
+      provider: "openai",
+      model,
+      apiKey,
+      systemPrompt: [
+        "You are an operations analyst writing for non-technical users.",
+        "Write 2-4 direct sentences in plain English.",
+        "State what happened, the key result/decision, confidence, and one concrete next action.",
+        "Do not use generic filler or marketing language.",
+        "Do not mention model, provider, or internal system details.",
+        'Return strict JSON with exactly one key: {"overallReview":"..."}'
+      ].join("\n"),
+      prompt: [
+        `Run metadata: ${JSON.stringify({
+          runId: run.runId,
+          workflowName: run.workflowName,
+          status: run.status,
+          startedAt: run.startedAt,
+          finishedAt: run.completedAt ?? run.updatedAt
+        })}`,
+        `Steps: ${JSON.stringify(steps).slice(0, 14000)}`
+      ].join("\n\n")
+    });
+
+    const overallReview =
+      llmObject && typeof llmObject.overallReview === "string" && llmObject.overallReview.trim()
+        ? llmObject.overallReview.trim()
+        : deterministicFallback;
+
+    res.json({
+      provider: "openai",
+      model,
+      mockMode: overallReview === deterministicFallback,
+      overallReview
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to generate overall review" });
+  }
+});
+
 app.get("/approvals", requireRoles("APPROVER"), async (req, res) => {
   try {
     const approvals = await orchestrator.listPendingApprovals(req.user!.teamId);
@@ -1960,6 +2104,16 @@ app.post("/procurement/po/:id/advance-status", requireRoles("OPERATOR", "BUILDER
   }
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`api listening on http://localhost:${PORT}`);
+});
+
+server.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`api failed to start: port ${PORT} is already in use. Stop the existing API process, then retry.`);
+    process.exit(1);
+    return;
+  }
+  console.error("api failed to start:", error.message);
+  process.exit(1);
 });

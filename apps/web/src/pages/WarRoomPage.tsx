@@ -51,6 +51,29 @@ function readString(value: unknown, fallback = "N/A") {
   return typeof value === "string" ? value : fallback;
 }
 
+function readConfidence(value: unknown, fallback = "n/a") {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value.toFixed(2);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  return fallback;
+}
+
+function readRecommendation(value: unknown, fallback = "N/A") {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record.decision === "string" && record.decision.trim()) {
+      return record.decision;
+    }
+  }
+  return fallback;
+}
+
 function readStepLabel(step: Record<string, unknown>) {
   const params = step.params;
   if (params && typeof params === "object" && typeof (params as Record<string, unknown>).label === "string") {
@@ -329,7 +352,7 @@ export function WarRoomPage() {
           `### Debate ${index + 1}`,
           `- Time: ${new Date(event.timestamp).toLocaleString()}`,
           `- Topic: ${readString(payload.topic)}`,
-          `- Recommendation: ${readString(payload.finalRecommendation)}`,
+          `- Recommendation: ${readRecommendation(payload.finalRecommendation)}`,
           args
         ].join("\n");
       })
@@ -452,6 +475,15 @@ export function WarRoomPage() {
             <p className="mt-1 text-sm text-slate-200">Live execution board optimized for fast operational readouts.</p>
           </div>
           <div className="flex gap-2">
+            {(runStatus === "COMPLETED" || runStatus === "FAILED" || runStatus === "REJECTED") ? (
+              <button
+                className="rounded bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-slate-950"
+                onClick={() => navigate(`/runs/${encodeURIComponent(runId)}/report`)}
+                type="button"
+              >
+                {runStatus === "COMPLETED" ? "Check Report" : "View Report"}
+              </button>
+            ) : null}
             <button
               className="rounded bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-70"
               disabled={isControllingRun || runStatus === "COMPLETED" || runStatus === "FAILED" || runStatus === "REJECTED"}
@@ -597,8 +629,8 @@ export function WarRoomPage() {
                 <div className="text-sm font-medium text-slate-900">
                   {readString(event.payload.topic, event.stepId ? stepLabelById.get(event.stepId) ?? event.stepId : "Debate")}
                 </div>
-                <div className="mt-1 text-xs text-orange-800">Final: {readString(event.payload.finalRecommendation)}</div>
-                <div className="mt-1 text-xs text-slate-500">Confidence: {readString(event.payload.confidence, "n/a")}</div>
+                <div className="mt-1 text-xs text-orange-800">Final: {readRecommendation(event.payload.finalRecommendation)}</div>
+                <div className="mt-1 text-xs text-slate-500">Confidence: {readConfidence(event.payload.confidence, "n/a")}</div>
                 <details className="mt-2">
                   <summary className="cursor-pointer text-xs text-slate-600">Arguments</summary>
                   <pre className="mt-2 max-h-40 overflow-auto rounded bg-slate-900 p-2 text-[11px] text-slate-100">

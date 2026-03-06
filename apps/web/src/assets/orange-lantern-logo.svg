@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">Orange Lantern Logo</title>
+  <desc id="desc">An orange lantern-like mark with a rounded cap and centered stem.</desc>
+  <defs>
+    <linearGradient id="capGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff6a00" />
+      <stop offset="100%" stop-color="#ff4b00" />
+    </linearGradient>
+    <linearGradient id="stemGradient" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#ff7a00" />
+      <stop offset="100%" stop-color="#ff5600" />
+    </linearGradient>
+  </defs>
+  <path
+    d="M42 142C42 82 94 52 160 52C226 52 278 82 278 142H42Z"
+    fill="url(#capGradient)"
+    stroke="#fff"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+  <rect x="145" y="142" width="30" height="10" fill="#fff" />
+  <path
+    d="M146 152H174V194C174 220 186 242 210 248L226 252C230 253 233 257 233 261V266C233 272 228 276 222 276C176 280 144 280 98 276C92 276 87 272 87 266V261C87 257 90 253 94 252L110 248C134 242 146 220 146 194V152Z"
+    fill="url(#stemGradient)"
+    stroke="#fff"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+</svg>

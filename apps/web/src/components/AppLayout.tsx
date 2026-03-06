@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import type { Role, RunState } from "../lib/types";
+import orangeLanternLogo from "../assets/orange-lantern-logo.svg";
 
 type TabConfig = {
   to: string;
@@ -200,12 +201,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="p-4">
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-2">
-              <span
-                aria-hidden="true"
-                className="inline-block h-3 w-3 rounded-full bg-orange-400 shadow-[0_0_16px_4px_rgba(251,146,60,0.9)]"
-              />
+              <img alt="Orange Lantern logo" className="h-9 w-9 shrink-0" src={orangeLanternLogo} />
               <div>
-                <h1 className="text-lg font-semibold text-white">Orange Lantern</h1>
+                <h1 className="text-lg font-semibold leading-tight tracking-tight text-white">Orange Lantern</h1>
                 <p className="text-xs text-slate-400">Multi-agent workflow governance</p>
               </div>
             </div>

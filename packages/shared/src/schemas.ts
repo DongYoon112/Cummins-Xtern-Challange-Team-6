@@ -897,6 +897,103 @@ export const BUILTIN_WORKFLOW_TEMPLATES = [
         }
       }
     ]
+  },
+  {
+    name: "asd",
+    description: "asd",
+    changelog: "Imported from local draft for Git-tracked seeding",
+    steps: [
+      {
+        id: "node_node_6op1amtb",
+        name: "Dataset Loader",
+        kind: "AGENT" as const,
+        agentName: "DatasetLoaderAgent",
+        params: {
+          label: "Dataset Loader",
+          agentName: "DatasetLoaderAgent",
+          dataset: "FD001",
+          unit_id: 1,
+          window: 50,
+          source: "download",
+          dataset_url: "https://www.kaggle.com/datasets/shashwatwork/dataco-smart-supply-chain-for-big-data-analysis",
+          cache_dir: "./data/CMAPSS",
+          nextStepId: "node_node_44g28g58"
+        }
+      },
+      {
+        id: "node_node_44g28g58",
+        name: "Feature Builder",
+        kind: "AGENT" as const,
+        agentName: "FeatureBuilderAgent",
+        params: {
+          label: "Feature Builder",
+          agentName: "FeatureBuilderAgent",
+          window: 50,
+          slope_window: 10,
+          nextStepId: "node_node_t22bt9sn"
+        }
+      },
+      {
+        id: "node_node_t22bt9sn",
+        name: "Debate",
+        kind: "AGENT" as const,
+        agentName: "Debate Agent",
+        params: {
+          label: "Debate",
+          agentName: "Debate Agent",
+          llmProvider: "openai",
+          llmModel: "gpt-4.1-mini",
+          debateTopic: "Diagnose probable failure mode using top CMAPSS anomalies.",
+          debateRounds: 1,
+          outputSchemaVersion: "v1",
+          requireJson: true,
+          nextStepId: "node_node_y7ymo4ht",
+          llmNodeMode: "debate"
+        }
+      },
+      {
+        id: "node_node_y7ymo4ht",
+        name: "Orchestrator",
+        kind: "AGENT" as const,
+        agentName: "Incident Orchestrator Agent",
+        params: {
+          label: "Orchestrator",
+          agentName: "Incident Orchestrator Agent",
+          llmProvider: "openai",
+          llmModel: "gpt-4.1-mini",
+          prompt:
+            "You are an enterprise maintenance orchestrator. Convert the analysis into a structured incident record for a maintenance database. Keep it concise, operational, and audit-friendly.",
+          nextStepId: "node_node_95f5xmke",
+          llmNodeMode: "llm"
+        }
+      },
+      {
+        id: "node_node_95f5xmke",
+        name: "DB Write",
+        kind: "AGENT" as const,
+        agentName: "DbWriteAgent",
+        params: {
+          label: "DB Write",
+          agentName: "DbWriteAgent",
+          db_target: "postgres",
+          sqlite_path: "",
+          nextStepId: "node_node_1x9l75h1",
+          connectionString: "postgresql://admin:admin@localhost:5432/workflowdb"
+        }
+      },
+      {
+        id: "node_node_1x9l75h1",
+        name: "Output",
+        kind: "AGENT" as const,
+        agentName: "Notification Agent",
+        params: {
+          label: "Output",
+          outputMode: "run_summary",
+          messageTemplate: "# CMAPSS Incident Result\n\n{{lastOutput}}",
+          includeContext: false
+        }
+      }
+    ]
   }
 ];
 

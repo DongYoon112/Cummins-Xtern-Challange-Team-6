@@ -36,8 +36,39 @@ type WarRoomSnapshot = {
   pendingDecisions: WarRoomDecision[];
 };
 
+type WarRoomInterpretation = {
+  mockMode: boolean;
+  provider: string;
+  model: string;
+  interpretation: {
+    summary: string;
+    rationale: string;
+    confidence: number;
+  };
+};
+
 function readString(value: unknown, fallback = "N/A") {
   return typeof value === "string" ? value : fallback;
+}
+
+function readStepLabel(step: Record<string, unknown>) {
+  const params = step.params;
+  if (params && typeof params === "object" && typeof (params as Record<string, unknown>).label === "string") {
+    const label = String((params as Record<string, unknown>).label).trim();
+    if (label) {
+      return label;
+    }
+  }
+  if (typeof step.name === "string" && step.name.trim()) {
+    return step.name.trim();
+  }
+  if (typeof step.stepId === "string" && step.stepId.trim()) {
+    return step.stepId.trim();
+  }
+  if (typeof step.id === "string" && step.id.trim()) {
+    return step.id.trim();
+  }
+  return "Step";
 }
 
 function mergeEvents(current: WarRoomEvent[], incoming: WarRoomEvent[]) {
@@ -49,6 +80,22 @@ function mergeEvents(current: WarRoomEvent[], incoming: WarRoomEvent[]) {
     map.set(`${event.id ?? "noid"}-${event.timestamp}-${event.type}-${event.stepId ?? ""}`, event);
   }
   return [...map.values()].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+}
+
+function statusBadgeClass(status: RunStatus | null) {
+  switch (status) {
+    case "RUNNING":
+      return "bg-emerald-100 text-emerald-900 border-emerald-300";
+    case "WAITING_APPROVAL":
+      return "bg-amber-100 text-amber-900 border-amber-300";
+    case "COMPLETED":
+      return "bg-cyan-100 text-cyan-900 border-cyan-300";
+    case "FAILED":
+    case "REJECTED":
+      return "bg-rose-100 text-rose-900 border-rose-300";
+    default:
+      return "bg-slate-100 text-slate-900 border-slate-300";
+  }
 }
 
 export function WarRoomPage() {
@@ -66,6 +113,10 @@ export function WarRoomPage() {
   const [error, setError] = useState<string | null>(null);
   const [reportText, setReportText] = useState("");
   const [isControllingRun, setIsControllingRun] = useState(false);
+  const [interpreterFocus, setInterpreterFocus] = useState("");
+  const [interpreting, setInterpreting] = useState(false);
+  const [interpreterError, setInterpreterError] = useState<string | null>(null);
+  const [interpretation, setInterpretation] = useState<WarRoomInterpretation | null>(null);
 
   useEffect(() => {
     if (!token || !runId) {
@@ -218,7 +269,7 @@ export function WarRoomPage() {
     return runSteps
       .map((step) => {
         const stepId = typeof step.stepId === "string" ? step.stepId : "";
-        const stepName = typeof step.name === "string" ? step.name : stepId;
+        const stepName = readStepLabel(step);
         const kind = typeof step.kind === "string" ? step.kind : "STEP";
         const status = typeof step.status === "string" ? step.status : "PENDING";
         if (!stepId) {
@@ -228,11 +279,35 @@ export function WarRoomPage() {
       })
       .filter((step): step is { id: string; label: string; kind: string; status: string } => Boolean(step));
   }, [runSteps]);
+  const stepLabelById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const step of runSteps) {
+      const stepId = typeof step.stepId === "string" ? step.stepId : "";
+      if (!stepId) {
+        continue;
+      }
+      map.set(stepId, readStepLabel(step));
+    }
+    return map;
+  }, [runSteps]);
   const recentEventCount = useMemo(() => {
     const now = Date.now();
     return timeline.filter((event) => now - Date.parse(event.timestamp) <= 120_000).length;
   }, [timeline]);
   const requestsInFlight = Math.max(activeSteps.length, Math.min(8, Math.max(2, Math.ceil(recentEventCount / 2))));
+  const stepCounts = useMemo(() => {
+    let completed = 0;
+    let failed = 0;
+    let waiting = 0;
+    for (const step of runSteps) {
+      const status = typeof step.status === "string" ? step.status : "";
+      if (status === "COMPLETED") completed += 1;
+      if (status === "FAILED" || status === "REJECTED") failed += 1;
+      if (status === "WAITING_APPROVAL") waiting += 1;
+    }
+    return { completed, failed, waiting, total: runSteps.length };
+  }, [runSteps]);
+  const completionRate = stepCounts.total > 0 ? Math.round((stepCounts.completed / stepCounts.total) * 100) : 0;
 
   function appendDebatesToReport() {
     if (debateFeed.length === 0) {
@@ -337,17 +412,44 @@ export function WarRoomPage() {
     }
   }
 
+  async function runInterpreter() {
+    if (!token || !runId) {
+      return;
+    }
+    setInterpreting(true);
+    setInterpreterError(null);
+    try {
+      const payload = await apiFetch<WarRoomInterpretation>(
+        `/api/war-room/${encodeURIComponent(runId)}/interpret`,
+        {
+          method: "POST",
+          body: JSON.stringify({ focus: interpreterFocus || undefined })
+        },
+        token
+      );
+      setInterpretation(payload);
+    } catch (err) {
+      setInterpreterError(err instanceof Error ? err.message : "Failed to interpret workflow run");
+    } finally {
+      setInterpreting(false);
+    }
+  }
+
   if (!runId) {
     return <div className="rounded border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">Missing runId query param.</div>;
   }
 
   return (
     <div className="space-y-4">
-      <section className="rounded border border-slate-200 bg-slate-900 p-4 text-slate-100">
+      <section className="warroom-onair rounded border border-slate-700 p-4 text-slate-100">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-xl font-semibold">War Room</h1>
-            <p className="mt-1 text-sm text-slate-300">Live orchestration dashboard for workflow execution and procurement response.</p>
+            <div className="mb-1 inline-flex items-center gap-2 rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-[11px] font-semibold tracking-wide text-rose-100">
+              <span className="warroom-pulse h-2 w-2 rounded-full bg-rose-400" />
+              ON AIR
+            </div>
+            <h1 className="text-2xl font-semibold">War Room</h1>
+            <p className="mt-1 text-sm text-slate-200">Live execution board optimized for fast operational readouts.</p>
           </div>
           <div className="flex gap-2">
             <button
@@ -367,14 +469,50 @@ export function WarRoomPage() {
             </button>
           </div>
         </div>
-        <div className="mt-2 text-xs text-slate-300">
-          Run: <span className="font-mono">{runId}</span> | Status: <span className="font-semibold">{runStatus ?? "unknown"}</span> | Paused:{" "}
-          <span className="font-semibold">{pauseRequested ? "yes" : "no"}</span>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-200">
+          <span className="rounded border border-slate-600 bg-slate-800/70 px-2 py-1">
+            Run: <span className="font-mono">{runId}</span>
+          </span>
+          <span className={`rounded border px-2 py-1 font-semibold ${statusBadgeClass(runStatus)}`}>
+            {runStatus ?? "UNKNOWN"}
+          </span>
+          <span className="rounded border border-slate-600 bg-slate-800/70 px-2 py-1">Paused: {pauseRequested ? "yes" : "no"}</span>
         </div>
       </section>
 
-      {status ? <p className="text-sm text-emerald-700">{status}</p> : null}
-      {error ? <p className="text-sm text-warn">{error}</p> : null}
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <article className="rounded border border-slate-300 bg-white p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Run Status</div>
+          <div className={`mt-2 inline-flex rounded border px-2 py-1 text-sm font-semibold ${statusBadgeClass(runStatus)}`}>
+            {runStatus ?? "UNKNOWN"}
+          </div>
+        </article>
+        <article className="rounded border border-slate-300 bg-white p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Completion</div>
+          <div className="mt-2 text-2xl font-semibold text-slate-900">{completionRate}%</div>
+          <div className="text-xs text-slate-600">
+            {stepCounts.completed}/{stepCounts.total} steps
+          </div>
+        </article>
+        <article className="rounded border border-slate-300 bg-white p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Active Steps</div>
+          <div className="mt-2 text-2xl font-semibold text-slate-900">{activeSteps.length}</div>
+          <div className="text-xs text-slate-600">Requests in flight: {requestsInFlight}</div>
+        </article>
+        <article className="rounded border border-slate-300 bg-white p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Pending Decisions</div>
+          <div className="mt-2 text-2xl font-semibold text-slate-900">{pendingDecisions.length}</div>
+          <div className="text-xs text-slate-600">Waiting approvals: {stepCounts.waiting}</div>
+        </article>
+        <article className="rounded border border-slate-300 bg-white p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Event Activity</div>
+          <div className="mt-2 text-2xl font-semibold text-slate-900">{recentEventCount}</div>
+          <div className="text-xs text-slate-600">last 2 minutes</div>
+        </article>
+      </section>
+
+      {status ? <p className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{status}</p> : null}
+      {error ? <p className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-warn">{error}</p> : null}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(460px,1.4fr)_minmax(0,1fr)]">
         <section className="flex min-h-[520px] flex-col rounded border border-cyan-200 bg-cyan-50 p-4 xl:col-start-2 xl:row-span-2">
@@ -437,7 +575,9 @@ export function WarRoomPage() {
           <div className="mt-3 space-y-2">
             {threatFeed.map((event) => (
               <article className="rounded border border-rose-200 bg-white p-3" key={`${event.id ?? event.timestamp}-${event.stepId ?? ""}`}>
-                <div className="text-sm font-medium text-slate-900">{readString(event.payload.summary, event.stepId ?? "Agent alert")}</div>
+                <div className="text-sm font-medium text-slate-900">
+                  {readString(event.payload.summary, event.stepId ? stepLabelById.get(event.stepId) ?? event.stepId : "Agent alert")}
+                </div>
                 <div className="text-xs text-slate-500">{new Date(event.timestamp).toLocaleString()}</div>
                 <div className="mt-1 text-xs text-rose-800">
                   Category: {readString(event.payload.category)} | Severity: {readString(event.payload.severity, "medium")} | Risk:{" "}
@@ -454,7 +594,9 @@ export function WarRoomPage() {
           <div className="mt-3 space-y-2">
             {debateFeed.map((event, index) => (
               <article className="rounded border border-orange-200 bg-white p-3" key={`${event.id ?? event.timestamp}-${index}`}>
-                <div className="text-sm font-medium text-slate-900">{readString(event.payload.topic, event.stepId ?? "Debate")}</div>
+                <div className="text-sm font-medium text-slate-900">
+                  {readString(event.payload.topic, event.stepId ? stepLabelById.get(event.stepId) ?? event.stepId : "Debate")}
+                </div>
                 <div className="mt-1 text-xs text-orange-800">Final: {readString(event.payload.finalRecommendation)}</div>
                 <div className="mt-1 text-xs text-slate-500">Confidence: {readString(event.payload.confidence, "n/a")}</div>
                 <details className="mt-2">
@@ -487,13 +629,57 @@ export function WarRoomPage() {
           </div>
         </section>
 
+        <section className="rounded border border-indigo-200 bg-indigo-50 p-4 xl:col-start-1 xl:row-start-3">
+          <h2 className="text-lg font-semibold text-indigo-900">AI Workflow Interpreter</h2>
+          <p className="mt-1 text-xs text-indigo-800">
+            Plain-language interpretation of current run state for any role.
+          </p>
+          <input
+            className="mt-2 w-full rounded border border-indigo-300 px-2 py-1 text-sm"
+            onChange={(event) => setInterpreterFocus(event.target.value)}
+            placeholder="Optional focus (ex: explain bottlenecks and next decision)"
+            value={interpreterFocus}
+          />
+          <button
+            className="mt-2 rounded bg-indigo-700 px-3 py-1 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-70"
+            disabled={interpreting}
+            onClick={() => runInterpreter().catch(() => undefined)}
+            type="button"
+          >
+            {interpreting ? "Interpreting..." : "Interpret Run"}
+          </button>
+          {interpreterError ? <p className="mt-2 text-xs text-warn">{interpreterError}</p> : null}
+          {interpretation ? (
+            <article className="mt-3 rounded border border-indigo-200 bg-white p-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span
+                  className={`rounded px-2 py-0.5 ${
+                    interpretation.mockMode ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"
+                  }`}
+                >
+                  {interpretation.mockMode ? "Mock Interpreter" : "Live Interpreter"}
+                </span>
+                <span className="rounded bg-slate-100 px-2 py-0.5">{interpretation.provider}</span>
+                <span className="rounded bg-slate-100 px-2 py-0.5">{interpretation.model}</span>
+                <span className="text-slate-600">confidence {interpretation.interpretation.confidence.toFixed(2)}</span>
+              </div>
+              <div className="mt-2 text-sm text-slate-900">{interpretation.interpretation.summary}</div>
+              <div className="mt-1 text-xs text-slate-600">{interpretation.interpretation.rationale}</div>
+            </article>
+          ) : (
+            <p className="mt-3 text-sm text-slate-500">No interpretation yet.</p>
+          )}
+        </section>
+
         <section className="rounded border border-emerald-200 bg-emerald-50 p-4 xl:col-start-1 xl:row-start-2">
           <h2 className="text-lg font-semibold text-emerald-900">Decision Console</h2>
           <div className="mt-2 text-xs text-slate-600">Active steps: {activeSteps.length}</div>
           <div className="mt-3 space-y-2">
             {pendingDecisions.map((item) => (
               <article className="rounded border border-emerald-200 bg-white p-3" key={item.id}>
-                <div className="text-sm font-medium text-slate-900">Router step: {item.routerStepId}</div>
+                <div className="text-sm font-medium text-slate-900">
+                  Router step: {stepLabelById.get(item.routerStepId) ?? item.routerStepId}
+                </div>
                 <div className="text-xs text-slate-500">Requested: {new Date(item.requestedAt).toLocaleString()}</div>
                 <div className="mt-2 flex gap-2">
                   <button
@@ -524,7 +710,9 @@ export function WarRoomPage() {
               <article className="rounded border border-slate-200 p-3" key={`${event.id ?? event.timestamp}-${index}`}>
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-sm font-medium text-slate-900">{event.type}</div>
-                  <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{event.stepId ?? "run"}</span>
+                  <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+                    {event.stepId ? stepLabelById.get(event.stepId) ?? event.stepId : "run"}
+                  </span>
                 </div>
                 <div className="text-xs text-slate-500">{new Date(event.timestamp).toLocaleString()}</div>
                 <pre className="mt-2 max-h-36 overflow-auto rounded bg-slate-900 p-2 text-[11px] text-slate-100">

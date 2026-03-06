@@ -185,11 +185,18 @@ Starter graph is prefilled in new drafts:
 `Start -> Dataset Loader -> Feature Builder -> Debate -> Orchestrator -> DB Write -> Output`
 
 Defaults:
-- `dataset=FD001`
+- `dataset=dataset` (free-text key, not hardcoded)
 - `unit_id=1`
 - `window=50`
-- loader `source=download` (auto-download + unzip once under `CMAPSS_CACHE_DIR`)
+- loader `source=download` (auto-download + cache under `CMAPSS_CACHE_DIR`)
+- optional `dataset_url` for direct text/zip link override (if blank, uses `CMAPSS_DOWNLOAD_URL`)
 - DB write target defaults to sqlite (`CMAPSS_SQLITE_PATH`) unless `db_target=postgres` and `DATABASE_URL` is set.
+
+Dataset loader behavior:
+- No dataset options are hardcoded in UI.
+- Enter any dataset key you want (for naming/tracking).
+- With `source=download`, the loader can pull from a direct `.txt` URL or a `.zip` URL.
+- With `source=local`, place dataset text files in cache dir (for example: `train_<DATASET_KEY>.txt`).
 
 Run:
 1. `pnpm dev`

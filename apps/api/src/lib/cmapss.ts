@@ -67,6 +67,19 @@ async function unzipArchive(zipPath: string, destination: string) {
   }
 }
 
+function datasetZipName(dataset: string) {
+  return `${dataset}.zip`;
+}
+
+function normalizeDatasetKey(dataset: string) {
+  const normalized = dataset
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .toUpperCase();
+  return normalized || "DATASET";
+}
+
 function parseCmapssContent(raw: string): CmapssRow[] {
   const lines = raw
     .split(/\r?\n/)
@@ -95,12 +108,15 @@ function parseCmapssContent(raw: string): CmapssRow[] {
   return rows;
 }
 
-async function resolveFd001Path(cacheDir: string) {
+async function resolveDatasetPath(cacheDir: string, dataset: string) {
+  const normalized = normalizeDatasetKey(dataset);
   const candidates = [
-    path.join(cacheDir, "train_FD001.txt"),
-    path.join(cacheDir, "FD001_train.txt"),
-    path.join(cacheDir, "CMAPSSData", "train_FD001.txt"),
-    path.join(cacheDir, "CMAPSSData", "FD001_train.txt")
+    path.join(cacheDir, `train_${normalized}.txt`),
+    path.join(cacheDir, `${normalized}_train.txt`),
+    path.join(cacheDir, `${normalized}.txt`),
+    path.join(cacheDir, "CMAPSSData", `train_${normalized}.txt`),
+    path.join(cacheDir, "CMAPSSData", `${normalized}_train.txt`),
+    path.join(cacheDir, "CMAPSSData", `${normalized}.txt`)
   ];
   for (const filePath of candidates) {
     if (await fileExists(filePath)) {
@@ -110,45 +126,84 @@ async function resolveFd001Path(cacheDir: string) {
   return "";
 }
 
-export async function loadCmapssFd001(params: {
+async function resolveAnyDatasetPath(cacheDir: string) {
+  const rootEntries = await fs.readdir(cacheDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of rootEntries) {
+    if (entry.isFile() && entry.name.toLowerCase().endsWith(".txt")) {
+      return path.join(cacheDir, entry.name);
+    }
+  }
+  const nested = path.join(cacheDir, "CMAPSSData");
+  const nestedEntries = await fs.readdir(nested, { withFileTypes: true }).catch(() => []);
+  for (const entry of nestedEntries) {
+    if (entry.isFile() && entry.name.toLowerCase().endsWith(".txt")) {
+      return path.join(nested, entry.name);
+    }
+  }
+  return "";
+}
+
+export async function loadCmapssDataset(params: {
+  dataset: string;
   unitId: number;
   source: "local" | "download";
+  datasetUrl?: string;
   cacheDir: string;
   window: number;
 }) {
+  const dataset = normalizeDatasetKey(params.dataset);
+
   const { unitId, source, cacheDir, window } = params;
+  const datasetUrl = params.datasetUrl?.trim() || "";
   await ensureDirectory(cacheDir);
 
-  let fd001Path = await resolveFd001Path(cacheDir);
-  if (!fd001Path && source === "download") {
-    const zipPath = path.join(cacheDir, "CMAPSSData.zip");
-    await downloadOnce(CMAPSS_DOWNLOAD_URL, zipPath);
-    await unzipArchive(zipPath, cacheDir);
-    fd001Path = await resolveFd001Path(cacheDir);
+  let datasetPath = await resolveDatasetPath(cacheDir, dataset);
+  if (!datasetPath && source === "download") {
+    const downloadUrl = datasetUrl || CMAPSS_DOWNLOAD_URL;
+    const urlPath = (() => {
+      try {
+        return new URL(downloadUrl).pathname.toLowerCase();
+      } catch {
+        return "";
+      }
+    })();
+    const isPlainText = urlPath.endsWith(".txt");
+    if (isPlainText) {
+      const txtPath = path.join(cacheDir, `${dataset}.txt`);
+      await downloadOnce(downloadUrl, txtPath);
+    } else {
+      const zipPath = path.join(cacheDir, datasetZipName(dataset));
+      await downloadOnce(downloadUrl, zipPath);
+      await unzipArchive(zipPath, cacheDir);
+    }
+    datasetPath = await resolveDatasetPath(cacheDir, dataset);
+    if (!datasetPath) {
+      datasetPath = await resolveAnyDatasetPath(cacheDir);
+    }
   }
 
-  if (!fd001Path) {
+  if (!datasetPath) {
     throw new Error(
-      `CMAPSS FD001 file not found in ${cacheDir}. Use source=download or place train_FD001.txt under data/CMAPSS.`
+      `Dataset file not found for key "${dataset}" in ${cacheDir}. Use source=download with dataset_url or place a file like train_${dataset}.txt in the cache directory.`
     );
   }
 
-  const raw = await fs.readFile(fd001Path, "utf8");
+  const raw = await fs.readFile(datasetPath, "utf8");
   const parsed = parseCmapssContent(raw);
   const engineRows = parsed.filter((row) => row.unit_id === unitId);
   if (engineRows.length === 0) {
-    throw new Error(`No CMAPSS rows found for unit_id=${unitId} in FD001.`);
+    throw new Error(`No CMAPSS rows found for unit_id=${unitId} in ${dataset}.`);
   }
 
   return {
     engine_rows: engineRows,
     columns: ["unit_id", "cycle", "setting_1", "setting_2", "setting_3", ...SENSOR_COLUMNS],
     dataset_meta: {
-      source_url: CMAPSS_SOURCE_URL,
-      dataset: "FD001",
+      source_url: datasetUrl || CMAPSS_SOURCE_URL,
+      dataset,
       unit_id: unitId,
       source_mode: source,
-      file_path: fd001Path,
+      file_path: datasetPath,
       row_count: engineRows.length,
       window_requested: window
     }

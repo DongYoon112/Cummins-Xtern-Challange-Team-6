@@ -83,7 +83,7 @@ function getNodeDescriptionSummary(node: WorkflowNode, tools: WorkflowTool[]) {
   }
 
   if (node.type === "dataset_loader") {
-    return "Loads CMAPSS FD001 rows for a specific engine unit from local cache or download.";
+    return "Loads dataset rows for a chosen dataset key from local cache or a download link.";
   }
 
   if (node.type === "feature_builder") {
@@ -173,10 +173,11 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
   const messageTemplate = String(node.config.messageTemplate ?? "");
   const webhookUrl = String(node.config.webhookUrl ?? "");
   const includeContext = node.config.includeContext === true;
-  const dataset = String(node.config.dataset ?? "FD001");
+  const dataset = String(node.config.dataset ?? "dataset");
   const unitId = String(node.config.unit_id ?? "1");
   const datasetWindow = String(node.config.window ?? "50");
   const datasetSource = String(node.config.source ?? "local");
+  const datasetUrl = String(node.config.dataset_url ?? "");
   const cacheDir = String(node.config.cache_dir ?? "./data/CMAPSS");
   const slopeWindow = String(node.config.slope_window ?? "10");
   const dbTarget = String(node.config.db_target ?? "postgres");
@@ -737,14 +738,16 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
       {node.type === "dataset_loader" ? (
         <div className="space-y-2">
           <label className="block text-xs">
-            <div className="mb-1 text-slate-600">Dataset</div>
-            <select
+            <div className="mb-1 text-slate-600">Dataset Key</div>
+            <input
               className="w-full rounded border border-slate-300 px-2 py-1"
               onChange={(event) => onUpdateNode(node.id, { config: { ...node.config, dataset: event.target.value } })}
+              placeholder="Enter any dataset name"
               value={dataset}
-            >
-              <option value="FD001">FD001</option>
-            </select>
+            />
+            <div className="mt-1 text-[11px] text-slate-500">
+              This is an identifier used for file matching and incident records.
+            </div>
           </label>
           <label className="block text-xs">
             <div className="mb-1 text-slate-600">Unit ID</div>
@@ -780,6 +783,21 @@ export function ConfigDrawer({ node, tools, onClose, onUpdateNode, onDeleteNode 
               <option value="local">local</option>
               <option value="download">download</option>
             </select>
+            <div className="mt-1 text-[11px] text-slate-500">`local` uses cached files. `download` fetches and caches data first.</div>
+          </label>
+          <label className="block text-xs">
+            <div className="mb-1 text-slate-600">Dataset Download Link (optional)</div>
+            <input
+              className="w-full rounded border border-slate-300 px-2 py-1"
+              onChange={(event) =>
+                onUpdateNode(node.id, { config: { ...node.config, dataset_url: event.target.value } })
+              }
+              placeholder="https://data.nasa.gov/docs/legacy/CMAPSSData.zip"
+              value={datasetUrl}
+            />
+            <div className="mt-1 text-[11px] text-slate-500">
+              If blank, the default CMAPSS URL is used. Helpful when sharing a custom mirror link.
+            </div>
           </label>
           <label className="block text-xs">
             <div className="mb-1 text-slate-600">Cache Dir</div>

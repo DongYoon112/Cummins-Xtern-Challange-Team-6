@@ -105,6 +105,38 @@ export function initApiDb() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS workflow_suggestions (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      author_user_id TEXT NOT NULL,
+      author_username TEXT NOT NULL,
+      author_role TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_suggestions_workflow_created
+      ON workflow_suggestions(team_id, workflow_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS workflow_change_requests (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL,
+      author_user_id TEXT NOT NULL,
+      author_username TEXT NOT NULL,
+      author_role TEXT NOT NULL,
+      proposed_config_json TEXT,
+      reviewed_by_user_id TEXT,
+      reviewed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_change_requests_workflow_created
+      ON workflow_change_requests(team_id, workflow_id, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS inventory (
       sku TEXT PRIMARY KEY,
       on_hand INTEGER NOT NULL,

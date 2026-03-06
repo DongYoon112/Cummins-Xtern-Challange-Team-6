@@ -318,6 +318,21 @@ export class OrchestratorService {
     reason: string;
     context: Record<string, unknown>;
   }): string {
+    const existing = db
+      .prepare(
+        `
+        SELECT id
+        FROM approvals
+        WHERE team_id = ? AND run_id = ? AND workflow_id = ? AND status = 'PENDING'
+        ORDER BY requested_at DESC
+        LIMIT 1
+        `
+      )
+      .get(params.actor.teamId, params.run.runId, params.run.workflowId) as { id: string } | undefined;
+    if (existing?.id) {
+      return existing.id;
+    }
+
     const approvalId = `apr_${randomUUID()}`;
     db.prepare(
       `

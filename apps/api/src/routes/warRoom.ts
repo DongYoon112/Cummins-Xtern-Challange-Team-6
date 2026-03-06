@@ -3,6 +3,8 @@ import type { RunState, WarRoomEvent, WarRoomDecision } from "@agentfoundry/shar
 import { z } from "zod";
 import { orchestrator } from "../agents/orchestrator";
 import { callMcpTool } from "../lib/mcpClient";
+import { getTeamSettingsForServer } from "../lib/settings";
+import { askProviderForJson } from "../lib/providers";
 
 const router = Router();
 
@@ -20,6 +22,11 @@ const decisionSchema = z.object({
 
 const runControlSchema = z.object({
   runId: z.string().min(1)
+});
+
+const interpretSchema = z.object({
+  focus: z.string().max(500).optional(),
+  repoId: z.string().min(1).optional()
 });
 
 async function buildWarRoomSnapshot(runId: string, teamId: string) {
@@ -180,6 +187,95 @@ router.post("/resume", async (req, res) => {
       return;
     }
     res.status(500).json({ error: "Failed to resume run" });
+  }
+});
+
+router.post("/:runId/interpret", async (req, res) => {
+  const parsed = interpretSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid interpreter payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const snapshot = await buildWarRoomSnapshot(req.params.runId, req.user!.teamId);
+    if (!snapshot.run) {
+      res.status(404).json({ error: "Run not found" });
+      return;
+    }
+
+    const settings = getTeamSettingsForServer(req.user!.teamId, parsed.data.repoId);
+    const provider = settings.defaultProvider;
+    const model = settings.defaultModel;
+    const apiKey = settings.keys[provider];
+    const focus = parsed.data.focus?.trim() || "Summarize run health, bottlenecks, and next action.";
+    const stepSummary = snapshot.runSteps.map((step) => ({
+      stepId: step.stepId,
+      name: step.name,
+      status: step.status,
+      kind: step.kind
+    }));
+    const recentEvents = snapshot.events.slice(-12).map((event) => ({
+      type: event.type,
+      stepId: event.stepId,
+      timestamp: event.timestamp
+    }));
+
+    if (!apiKey) {
+      res.json({
+        mockMode: true,
+        provider,
+        model,
+        interpretation: {
+          summary: `Run ${snapshot.run.runId} is ${snapshot.run.status}. Active steps: ${snapshot.activeSteps.length}. Pending decisions: ${snapshot.pendingDecisions.length}.`,
+          rationale: "No provider API key configured, returning deterministic interpreter output.",
+          confidence: 0.55
+        }
+      });
+      return;
+    }
+
+    const envelope = await askProviderForJson({
+      provider,
+      model,
+      apiKey,
+      prompt: [
+        "You are an AI workflow interpreter for War Room.",
+        "Return concise plain-language diagnostics for operators and builders.",
+        `Focus: ${focus}`,
+        `Run: ${JSON.stringify(snapshot.run)}`,
+        `Steps: ${JSON.stringify(stepSummary).slice(0, 5000)}`,
+        `Recent events: ${JSON.stringify(recentEvents).slice(0, 4000)}`
+      ].join("\n")
+    });
+
+    if (!envelope) {
+      res.json({
+        mockMode: true,
+        provider,
+        model,
+        interpretation: {
+          summary: `Run ${snapshot.run.runId} is ${snapshot.run.status}. Active steps: ${snapshot.activeSteps.length}. Pending decisions: ${snapshot.pendingDecisions.length}.`,
+          rationale: "Provider call returned no envelope, using deterministic fallback.",
+          confidence: 0.5
+        }
+      });
+      return;
+    }
+
+    res.json({
+      mockMode: false,
+      provider,
+      model,
+      interpretation: {
+        summary: envelope.summary,
+        rationale: envelope.rationale,
+        confidence: envelope.confidence
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to interpret run" });
   }
 });
 

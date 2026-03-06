@@ -63,6 +63,32 @@ type DraftGenerateResponse = {
   risks: string[];
 };
 
+type WorkflowSuggestion = {
+  id: string;
+  workflowId: string;
+  authorUserId: string;
+  authorUsername: string;
+  authorRole: string;
+  body: string;
+  createdAt: string;
+};
+
+type WorkflowChangeRequest = {
+  id: string;
+  workflowId: string;
+  title: string;
+  body: string;
+  status: "OPEN" | "ACCEPTED" | "REJECTED" | "MERGED";
+  authorUserId: string;
+  authorUsername: string;
+  authorRole: string;
+  proposedConfig?: WorkflowConfig | null;
+  reviewedByUserId?: string | null;
+  reviewedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 const AI_TOOL_CHOICES = [
   { id: "web", label: "Web" },
   { id: "http", label: "HTTP" },
@@ -283,6 +309,16 @@ export function WorkflowsPage() {
   const [aiBusy, setAiBusy] = useState(false);
   const [aiNotes, setAiNotes] = useState<string[]>([]);
   const [aiRisks, setAiRisks] = useState<string[]>([]);
+  const [workflowSuggestions, setWorkflowSuggestions] = useState<WorkflowSuggestion[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+  const [newSuggestion, setNewSuggestion] = useState("");
+  const [changeRequests, setChangeRequests] = useState<WorkflowChangeRequest[]>([]);
+  const [changeRequestsLoading, setChangeRequestsLoading] = useState(false);
+  const [changeRequestsError, setChangeRequestsError] = useState<string | null>(null);
+  const [newCrTitle, setNewCrTitle] = useState("");
+  const [newCrBody, setNewCrBody] = useState("");
+  const [attachCurrentDraftToCr, setAttachCurrentDraftToCr] = useState(false);
 
   const canSave = user?.role === "BUILDER" || user?.role === "ADMIN";
   const graphValidation = useMemo(() => validateFlowGraph(config.graph ?? { nodes: [], edges: [] }), [config.graph]);
@@ -316,11 +352,155 @@ export function WorkflowsPage() {
         .filter((entry): entry is WorkflowSummary => Boolean(entry))
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
       setWorkflowList(workflows);
+      if (!selectedWorkflowId && workflows.length > 0) {
+        setSelectedWorkflowId(workflows[0].workflowId);
+      }
     } catch (err) {
       setWorkflowError(err instanceof Error ? err.message : "Failed to load workflows");
     } finally {
       setWorkflowLoading(false);
     }
+  }
+
+  async function loadSuggestions(workflowId: string) {
+    if (!token) {
+      return;
+    }
+    setSuggestionsLoading(true);
+    setSuggestionsError(null);
+    try {
+      const payload = await apiFetch<{ suggestions: WorkflowSuggestion[] }>(
+        `/workflows/${encodeURIComponent(workflowId)}/suggestions`,
+        {},
+        token
+      );
+      setWorkflowSuggestions(payload.suggestions ?? []);
+    } catch (err) {
+      setWorkflowSuggestions([]);
+      setSuggestionsError(err instanceof Error ? err.message : "Failed to load suggestions");
+    } finally {
+      setSuggestionsLoading(false);
+    }
+  }
+
+  async function submitSuggestion() {
+    if (!token || !selectedWorkflowId) {
+      return;
+    }
+    const body = newSuggestion.trim();
+    if (!body) {
+      setSuggestionsError("Suggestion cannot be empty.");
+      return;
+    }
+    setSuggestionsError(null);
+    try {
+      await apiFetch(
+        `/workflows/${encodeURIComponent(selectedWorkflowId)}/suggestions`,
+        {
+          method: "POST",
+          body: JSON.stringify({ body })
+        },
+        token
+      );
+      setNewSuggestion("");
+      await loadSuggestions(selectedWorkflowId);
+      setStatus("Suggestion submitted.");
+    } catch (err) {
+      setSuggestionsError(err instanceof Error ? err.message : "Failed to submit suggestion");
+    }
+  }
+
+  async function loadChangeRequests(workflowId: string) {
+    if (!token) {
+      return;
+    }
+    setChangeRequestsLoading(true);
+    setChangeRequestsError(null);
+    try {
+      const payload = await apiFetch<{ changeRequests: WorkflowChangeRequest[] }>(
+        `/workflows/${encodeURIComponent(workflowId)}/change-requests`,
+        {},
+        token
+      );
+      setChangeRequests(payload.changeRequests ?? []);
+    } catch (err) {
+      setChangeRequests([]);
+      setChangeRequestsError(err instanceof Error ? err.message : "Failed to load change requests");
+    } finally {
+      setChangeRequestsLoading(false);
+    }
+  }
+
+  async function submitChangeRequest() {
+    if (!token || !selectedWorkflowId) {
+      return;
+    }
+    const title = newCrTitle.trim();
+    const body = newCrBody.trim();
+    if (!title || !body) {
+      setChangeRequestsError("Title and description are required.");
+      return;
+    }
+    setChangeRequestsError(null);
+    try {
+      await apiFetch(
+        `/workflows/${encodeURIComponent(selectedWorkflowId)}/change-requests`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            title,
+            body,
+            proposedConfig: attachCurrentDraftToCr ? config : null
+          })
+        },
+        token
+      );
+      setNewCrTitle("");
+      setNewCrBody("");
+      setAttachCurrentDraftToCr(false);
+      await loadChangeRequests(selectedWorkflowId);
+      setStatus("Change request submitted.");
+    } catch (err) {
+      setChangeRequestsError(err instanceof Error ? err.message : "Failed to submit change request");
+    }
+  }
+
+  async function updateChangeRequestStatus(changeRequestId: string, statusValue: "OPEN" | "ACCEPTED" | "REJECTED" | "MERGED") {
+    if (!token || !selectedWorkflowId) {
+      return;
+    }
+    try {
+      await apiFetch(
+        `/workflows/${encodeURIComponent(selectedWorkflowId)}/change-requests/${encodeURIComponent(changeRequestId)}/status`,
+        {
+          method: "POST",
+          body: JSON.stringify({ status: statusValue })
+        },
+        token
+      );
+      await loadChangeRequests(selectedWorkflowId);
+      setStatus(`Change request marked ${statusValue}.`);
+    } catch (err) {
+      setChangeRequestsError(err instanceof Error ? err.message : "Failed to update change request status");
+    }
+  }
+
+  function pullChangeRequestToBuilder(changeRequest: WorkflowChangeRequest) {
+    if (!changeRequest.proposedConfig) {
+      setChangeRequestsError("This change request has no attached workflow config.");
+      return;
+    }
+    const nextConfig = {
+      ...changeRequest.proposedConfig,
+      id: selectedWorkflowId ?? changeRequest.workflowId
+    };
+    setConfig(nextConfig);
+    setActiveRepoId(nextConfig.id);
+    setBuilderUnlocked(true);
+    setPageMode("builder");
+    setMode("flowchart");
+    setStatus(`Pulled change request "${changeRequest.title}" into Builder draft.`);
+    setError(null);
   }
 
   async function copyWorkflowId(workflowId: string) {
@@ -485,6 +665,16 @@ export function WorkflowsPage() {
   }, [token]);
 
   useEffect(() => {
+    if (!selectedWorkflowId || !token) {
+      setWorkflowSuggestions([]);
+      setChangeRequests([]);
+      return;
+    }
+    loadSuggestions(selectedWorkflowId).catch(() => undefined);
+    loadChangeRequests(selectedWorkflowId).catch(() => undefined);
+  }, [selectedWorkflowId, token]);
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
@@ -620,6 +810,7 @@ export function WorkflowsPage() {
         token ?? undefined
       );
       setStatus(`Run started: ${payload.run.runId}`);
+      navigate(`/run?runId=${encodeURIComponent(payload.run.runId)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start run");
     }
@@ -639,19 +830,12 @@ export function WorkflowsPage() {
         setError("Publish or select a workflow before launching War Room.");
         return;
       }
-      const payload = await apiFetch<{ runId: string }>(
-        "/api/war-room/start",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            workflowId,
-            workflowVersion: publishedVersion ?? undefined
-          })
-        },
-        token
-      );
-
-      navigate(`/war-room?runId=${encodeURIComponent(payload.runId)}`);
+      const params = new URLSearchParams();
+      params.set("workflowId", workflowId);
+      if (publishedVersion) {
+        params.set("workflowVersion", String(publishedVersion));
+      }
+      navigate(`/war-room-loading?${params.toString()}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to launch War Room run");
     }
@@ -1011,6 +1195,182 @@ export function WorkflowsPage() {
               Double-click a workflow row to open Builder with that workflow selected.
             </p>
 
+          </section>
+          <section className="rounded border border-slate-200 bg-white p-4">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">Workflow Suggestions</h3>
+              <div className="text-xs text-slate-500">
+                {selectedWorkflowId ? `Workflow: ${selectedWorkflowId}` : "Select a workflow to view suggestions"}
+              </div>
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Share issues, gaps, and improvement ideas. Builders can use this as a fix backlog.
+            </p>
+            <div className="mt-3">
+              <textarea
+                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                onChange={(event) => setNewSuggestion(event.target.value)}
+                placeholder="Example: Add approval gate before DB Write when confidence < 0.7."
+                rows={3}
+                value={newSuggestion}
+              />
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  className="rounded bg-slate-900 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!selectedWorkflowId}
+                  onClick={() => submitSuggestion().catch(() => undefined)}
+                  type="button"
+                >
+                  Submit Suggestion
+                </button>
+                <button
+                  className="rounded border border-slate-300 px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!selectedWorkflowId}
+                  onClick={() => (selectedWorkflowId ? loadSuggestions(selectedWorkflowId).catch(() => undefined) : undefined)}
+                  type="button"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 space-y-2">
+              {suggestionsLoading ? <p className="text-xs text-slate-500">Loading suggestions...</p> : null}
+              {suggestionsError ? <p className="text-xs text-warn">{suggestionsError}</p> : null}
+              {!suggestionsLoading && workflowSuggestions.length === 0 ? (
+                <p className="text-sm text-slate-500">No suggestions yet.</p>
+              ) : null}
+              {workflowSuggestions.map((item) => (
+                <article className="rounded border border-slate-200 bg-slate-50 p-3" key={item.id}>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                    <span className="font-medium text-slate-800">{item.authorUsername}</span>
+                    <span className="rounded bg-slate-200 px-1.5 py-0.5">{item.authorRole}</span>
+                    <span>{formatDateTime(item.createdAt)}</span>
+                  </div>
+                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-800">{item.body}</div>
+                </article>
+              ))}
+            </div>
+          </section>
+          <section className="rounded border border-slate-200 bg-white p-4">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">Workflow Change Requests (PR-style)</h3>
+              <div className="text-xs text-slate-500">
+                {selectedWorkflowId ? `Workflow: ${selectedWorkflowId}` : "Select a workflow to submit requests"}
+              </div>
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Create request tickets with optional proposed workflow config. Builders/Admins can pull proposals into Builder and merge.
+            </p>
+            <div className="mt-3 grid gap-2">
+              <input
+                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                onChange={(event) => setNewCrTitle(event.target.value)}
+                placeholder="Title: Add approval gate before DB write"
+                value={newCrTitle}
+              />
+              <textarea
+                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                onChange={(event) => setNewCrBody(event.target.value)}
+                placeholder="Describe what should change and why."
+                rows={3}
+                value={newCrBody}
+              />
+              <label className="flex items-center gap-2 text-xs text-slate-700">
+                <input
+                  checked={attachCurrentDraftToCr}
+                  onChange={(event) => setAttachCurrentDraftToCr(event.target.checked)}
+                  type="checkbox"
+                />
+                Attach current Builder draft as proposed config
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  className="rounded bg-slate-900 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!selectedWorkflowId}
+                  onClick={() => submitChangeRequest().catch(() => undefined)}
+                  type="button"
+                >
+                  Create Change Request
+                </button>
+                <button
+                  className="rounded border border-slate-300 px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!selectedWorkflowId}
+                  onClick={() => (selectedWorkflowId ? loadChangeRequests(selectedWorkflowId).catch(() => undefined) : undefined)}
+                  type="button"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 space-y-2">
+              {changeRequestsLoading ? <p className="text-xs text-slate-500">Loading change requests...</p> : null}
+              {changeRequestsError ? <p className="text-xs text-warn">{changeRequestsError}</p> : null}
+              {!changeRequestsLoading && changeRequests.length === 0 ? (
+                <p className="text-sm text-slate-500">No change requests yet.</p>
+              ) : null}
+              {changeRequests.map((item) => (
+                <article className="rounded border border-slate-200 bg-slate-50 p-3" key={item.id}>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="font-semibold text-slate-800">{item.title}</span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 ${
+                        item.status === "OPEN"
+                          ? "bg-amber-100 text-amber-800"
+                          : item.status === "ACCEPTED"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : item.status === "MERGED"
+                              ? "bg-cyan-100 text-cyan-800"
+                              : "bg-rose-100 text-rose-800"
+                      }`}
+                    >
+                      {item.status}
+                    </span>
+                    <span className="text-slate-600">{item.authorUsername}</span>
+                    <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">{item.authorRole}</span>
+                    <span className="text-slate-500">{formatDateTime(item.createdAt)}</span>
+                  </div>
+                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-800">{item.body}</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {canSave && item.proposedConfig ? (
+                      <button
+                        className="rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                        onClick={() => pullChangeRequestToBuilder(item)}
+                        type="button"
+                      >
+                        Pull To Builder Draft
+                      </button>
+                    ) : null}
+                    {canSave ? (
+                      <>
+                        <button
+                          className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs text-emerald-800"
+                          onClick={() => updateChangeRequestStatus(item.id, "ACCEPTED").catch(() => undefined)}
+                          type="button"
+                        >
+                          Accept
+                        </button>
+                        <button
+                          className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-xs text-rose-800"
+                          onClick={() => updateChangeRequestStatus(item.id, "REJECTED").catch(() => undefined)}
+                          type="button"
+                        >
+                          Reject
+                        </button>
+                        <button
+                          className="rounded border border-cyan-300 bg-cyan-50 px-2 py-1 text-xs text-cyan-800"
+                          onClick={() => updateChangeRequestStatus(item.id, "MERGED").catch(() => undefined)}
+                          type="button"
+                        >
+                          Mark Merged
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                </article>
+              ))}
+            </div>
           </section>
         </>
       ) : (

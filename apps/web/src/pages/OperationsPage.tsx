@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import type { RunState, WorkflowSummary } from "../lib/types";
@@ -22,7 +23,26 @@ function formatTime(value?: string) {
   return Number.isNaN(ts) ? value : new Date(ts).toLocaleString();
 }
 
+function readLlmExecution(output: unknown) {
+  if (!output || typeof output !== "object") {
+    return null;
+  }
+  const meta = (output as Record<string, unknown>).llm_execution;
+  if (!meta || typeof meta !== "object") {
+    return null;
+  }
+  const value = meta as Record<string, unknown>;
+  return {
+    provider: typeof value.provider === "string" ? value.provider : "",
+    model: typeof value.model === "string" ? value.model : "",
+    llmUsed: value.llm_used === true,
+    mockMode: value.mock_mode === true,
+    reason: typeof value.reason === "string" ? value.reason : ""
+  };
+}
+
 export function OperationsPage() {
+  const navigate = useNavigate();
   const { token, user } = useAuth();
   const [runs, setRuns] = useState<RunState[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -86,6 +106,7 @@ export function OperationsPage() {
       );
       setStatus(`Run started: ${payload.run.runId}`);
       setSelectedRunId(payload.run.runId);
+      navigate(`/run?runId=${encodeURIComponent(payload.run.runId)}`);
       await loadRuns();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start run");
@@ -232,6 +253,22 @@ export function OperationsPage() {
                   <div className="mt-1 text-xs text-slate-500">
                     {step.kind} {step.agentName ? `- ${step.agentName}` : ""}
                   </div>
+                  {(() => {
+                    const llm = readLlmExecution(step.output);
+                    if (!llm) {
+                      return null;
+                    }
+                    return (
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                        <span className={`rounded px-2 py-0.5 ${llm.llmUsed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                          {llm.llmUsed ? "LLM Used" : "Mock/Fallback"}
+                        </span>
+                        {llm.provider ? <span className="rounded bg-slate-100 px-2 py-0.5">{llm.provider}</span> : null}
+                        {llm.model ? <span className="rounded bg-slate-100 px-2 py-0.5">{llm.model}</span> : null}
+                        {llm.reason ? <span className="text-slate-600">{llm.reason}</span> : null}
+                      </div>
+                    );
+                  })()}
                   {step.output ? (
                     <pre className="mt-2 overflow-auto rounded bg-slate-900 p-2 text-xs text-slate-100">
                       {JSON.stringify(step.output, null, 2)}
@@ -242,6 +279,7 @@ export function OperationsPage() {
                       Confidence: {step.confidence.toFixed(2)}
                     </div>
                   ) : null}
+                  {step.rationale ? <div className="mt-1 text-xs text-slate-600">Rationale: {step.rationale}</div> : null}
                 </div>
               ))}
             </div>

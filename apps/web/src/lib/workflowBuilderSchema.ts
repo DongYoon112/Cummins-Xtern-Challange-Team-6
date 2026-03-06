@@ -166,17 +166,13 @@ function generateId(prefix: string) {
 
 export function createDefaultWorkflowConfig(): WorkflowConfig {
   const startId = generateId("node");
-  const datasetLoaderId = generateId("node");
-  const featureBuilderId = generateId("node");
   const debateId = generateId("node");
-  const orchestratorId = generateId("node");
-  const dbWriteId = generateId("node");
   const outputId = generateId("node");
 
   return {
     id: generateId("wf"),
-    name: "CMAPSS Incident Demo",
-    description: "Start -> Dataset Loader -> Feature Builder -> Debate -> Orchestrator -> DB Write -> Output",
+    name: "Debate Workflow",
+    description: "Start -> Debate -> Output",
     agentType: "Data/Analytics",
     llmProvider: "openai",
     llmModel: "gpt-4.1-mini",
@@ -191,84 +187,35 @@ export function createDefaultWorkflowConfig(): WorkflowConfig {
       nodes: [
         { id: startId, type: "start", position: { x: 100, y: 150 }, config: { label: "Start" } },
         {
-          id: datasetLoaderId,
-          type: "dataset_loader",
-          position: { x: 330, y: 150 },
-          config: {
-            label: "Dataset Loader",
-            agentName: "DatasetLoaderAgent",
-            dataset: "FD001",
-            unit_id: 1,
-            window: 50,
-            source: "download",
-            cache_dir: "./data/CMAPSS"
-          }
-        },
-        {
-          id: featureBuilderId,
-          type: "feature_builder",
-          position: { x: 560, y: 150 },
-          config: {
-            label: "Feature Builder",
-            agentName: "FeatureBuilderAgent",
-            window: 50,
-            slope_window: 10
-          }
-        },
-        {
           id: debateId,
           type: "debate",
-          position: { x: 790, y: 150 },
+          position: { x: 430, y: 150 },
           config: {
             label: "Debate",
-            agentName: "CMAPSS Debate Agent",
+            agentName: "Debate Agent",
             llmProvider: "openai",
             llmModel: "gpt-4.1-mini",
-            debateTopic: "Diagnose probable failure mode using top CMAPSS anomalies.",
+            debateTopic: "Should we approve this plan based on risk, cost, and reliability?",
             debateRounds: 2,
             outputSchemaVersion: "v1",
             requireJson: true
           }
         },
         {
-          id: orchestratorId,
-          type: "llm",
-          position: { x: 1020, y: 150 },
-          config: {
-            label: "Orchestrator",
-            agentName: "Incident Orchestrator Agent"
-          }
-        },
-        {
-          id: dbWriteId,
-          type: "db_write",
-          position: { x: 1250, y: 150 },
-          config: {
-            label: "DB Write",
-            agentName: "DbWriteAgent",
-            db_target: "sqlite",
-            sqlite_path: "./data/engine-incidents.db"
-          }
-        },
-        {
           id: outputId,
           type: "output",
-          position: { x: 1480, y: 150 },
+          position: { x: 760, y: 150 },
           config: {
             label: "Output",
             outputMode: "run_summary",
-            messageTemplate: "# CMAPSS Incident Result\n\n{{lastOutput}}",
+            messageTemplate: "# Debate Result\n\n{{lastOutput}}",
             includeContext: false
           }
         }
       ],
       edges: [
-        { id: generateId("edge"), source: startId, target: datasetLoaderId },
-        { id: generateId("edge"), source: datasetLoaderId, target: featureBuilderId },
-        { id: generateId("edge"), source: featureBuilderId, target: debateId },
-        { id: generateId("edge"), source: debateId, target: orchestratorId },
-        { id: generateId("edge"), source: orchestratorId, target: dbWriteId },
-        { id: generateId("edge"), source: dbWriteId, target: outputId }
+        { id: generateId("edge"), source: startId, target: debateId },
+        { id: generateId("edge"), source: debateId, target: outputId }
       ]
     }
   };

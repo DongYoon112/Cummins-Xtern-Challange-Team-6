@@ -79,6 +79,16 @@ main > * {
   animation-iteration-count: infinite;
 }
 
+.warroom-onair {
+  background:
+    radial-gradient(900px 180px at 20% -20%, rgba(56, 189, 248, 0.24), transparent 65%),
+    linear-gradient(110deg, #0b132b 0%, #111827 45%, #04111d 100%);
+}
+
+.warroom-pulse {
+  animation: warroom-pulse 1.6s ease-in-out infinite;
+}
+
 @keyframes war-room-flow-dot {
   0% {
     left: -0.5rem;
@@ -93,6 +103,21 @@ main > * {
   100% {
     left: calc(100% + 0.5rem);
     opacity: 0;
+  }
+}
+
+@keyframes warroom-pulse {
+  0% {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 rgba(251, 113, 133, 0.6);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 10px rgba(251, 113, 133, 0);
+  }
+  100% {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 rgba(251, 113, 133, 0);
   }
 }
 

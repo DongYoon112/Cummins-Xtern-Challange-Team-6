@@ -10,6 +10,7 @@ import { AuditLogPage } from "./pages/AuditLogPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { DocsPage } from "./pages/DocsPage";
 import { WarRoomPage } from "./pages/WarRoomPage";
+import { WarRoomLoadingPage } from "./pages/WarRoomLoadingPage";
 import { HomePage } from "./pages/HomePage";
 import { ProcurementPage } from "./pages/ProcurementPage";
 import type { Role } from "./lib/types";
@@ -61,6 +62,7 @@ function Shell() {
           <Route path="/procurement" element={<ProcurementPage />} />
           <Route path="/run" element={<RunsPage />} />
           <Route path="/runs" element={<Navigate replace to="/run" />} />
+          <Route path="/war-room-loading" element={<WarRoomLoadingPage />} />
           <Route path="/war-room" element={<WarRoomPage />} />
           <Route path="/docs" element={<DocsPage />} />
           <Route

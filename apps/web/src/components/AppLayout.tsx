@@ -39,7 +39,7 @@ const tabs: TabConfig[] = [
     to: "/workflows",
     label: "Workflows",
     summary: "Create, edit, and publish workflow graphs with AI-assisted tools.",
-    roles: ["BUILDER", "OPERATOR", "ADMIN"]
+    roles: ["BUILDER", "OPERATOR", "APPROVER", "AUDITOR", "ADMIN"]
   },
   {
     to: "/operations",

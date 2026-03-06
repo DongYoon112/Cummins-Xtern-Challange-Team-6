@@ -39,6 +39,26 @@ function loadLocalKeys() {
   }
 }
 
+function providerKeyHint(provider: ProviderKey, raw: string) {
+  const key = raw.trim();
+  if (!key) {
+    return "";
+  }
+  if (key.toUpperCase().startsWith("MAST")) {
+    return "This looks like MASTER_KEY, not an API key.";
+  }
+  if (provider === "openai" && !key.startsWith("sk-")) {
+    return "OpenAI keys should start with 'sk-'.";
+  }
+  if (provider === "anthropic" && !key.startsWith("sk-ant-")) {
+    return "Anthropic keys should start with 'sk-ant-'.";
+  }
+  if (provider === "gemini" && !key.startsWith("AIza")) {
+    return "Gemini keys typically start with 'AIza'.";
+  }
+  return "";
+}
+
 export function SettingsPage() {
   const { token } = useAuth();
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
@@ -347,6 +367,9 @@ export function SettingsPage() {
               type="password"
               value={keys[name]}
             />
+            {providerKeyHint(name, keys[name]) ? (
+              <div className="mt-1 text-xs text-warn">{providerKeyHint(name, keys[name])}</div>
+            ) : null}
             <button
               className="mt-2 rounded border border-slate-300 px-2 py-1 text-xs"
               onClick={() => saveKey(name)}

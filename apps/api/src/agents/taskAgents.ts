@@ -6,7 +6,7 @@ import * as providerClient from "../lib/providers";
 import type { ServerTeamSettings } from "../lib/settings";
 import { db } from "../lib/db";
 import { executeExternalQuery, executeReadOnlyExternalQuery } from "../lib/externalDb";
-import { buildCmapssFeatures, loadCmapssFd001 } from "../lib/cmapss";
+import { buildCmapssFeatures, loadCmapssDataset } from "../lib/cmapss";
 import {
   DebateOutputSchema,
   DEFAULT_MODELS,
@@ -275,32 +275,36 @@ export async function runTaskAgent(params: {
   const toolCalls: TaskResult["toolCalls"] = [];
 
   if (agentName === "DatasetLoaderAgent") {
-    const dataset = String(stepParams.dataset ?? "FD001").toUpperCase();
-    if (dataset !== "FD001") {
-      throw new Error(`DatasetLoaderAgent currently supports FD001 only. Received: ${dataset}`);
-    }
-
+    const dataset = String(stepParams.dataset ?? "dataset").trim();
+    const datasetKey = dataset
+      .replace(/\s+/g, "_")
+      .replace(/[^a-zA-Z0-9_-]/g, "")
+      .toLowerCase() || "dataset";
     const source = String(stepParams.source ?? "local").toLowerCase() === "download" ? "download" : "local";
     const unitId = Math.max(1, Number(stepParams.unit_id ?? runContext.unit_id ?? 1) || 1);
     const window = Math.max(5, Number(stepParams.window ?? runContext.window ?? 50) || 50);
+    const datasetUrl = String(stepParams.dataset_url ?? "").trim();
     const cacheDir = path.resolve(
       String(stepParams.cache_dir ?? process.env.CMAPSS_CACHE_DIR ?? path.resolve(process.cwd(), "data", "CMAPSS"))
     );
 
-    const loaded = await loadCmapssFd001({
+    const loaded = await loadCmapssDataset({
+      dataset,
       unitId,
       source,
+      datasetUrl,
       cacheDir,
       window
     });
 
     toolCalls.push({
       server: "local-dataset",
-      tool: source === "download" ? "download+parse_fd001" : "parse_fd001",
+      tool: source === "download" ? `download+parse_${datasetKey}` : `parse_${datasetKey}`,
       args: {
         dataset,
         unit_id: unitId,
         source,
+        dataset_url: datasetUrl || null,
         cache_dir: cacheDir,
         row_count: loaded.engine_rows.length
       }
@@ -309,7 +313,7 @@ export async function runTaskAgent(params: {
     return {
       output: loaded,
       confidence: 0.95,
-      rationale: `Loaded ${loaded.engine_rows.length} rows for unit ${unitId} from ${source} CMAPSS FD001 source.`,
+      rationale: `Loaded ${loaded.engine_rows.length} rows for unit ${unitId} from ${source} source using dataset "${dataset}".`,
       toolCalls,
       mockMode: false
     };
@@ -388,7 +392,14 @@ export async function runTaskAgent(params: {
           "Schedule maintenance inspection for the unit.",
           "Increase monitoring frequency for next 20 cycles."
         ],
-        transcript_summary: "Deterministic fallback debate used due to missing provider key."
+        transcript_summary: "Deterministic fallback debate used due to missing provider key.",
+        llm_execution: {
+          provider,
+          model,
+          llm_used: false,
+          mock_mode: true,
+          reason: "Provider key is not configured."
+        }
       };
       return {
         output: fallback,
@@ -439,7 +450,14 @@ export async function runTaskAgent(params: {
           "Queue manual review for this engine incident.",
           "Re-run debate after provider connectivity is restored."
         ],
-        transcript_summary: "Debate fallback used because provider call returned no envelope."
+        transcript_summary: "Debate fallback used because provider call returned no envelope.",
+        llm_execution: {
+          provider,
+          model,
+          llm_used: false,
+          mock_mode: true,
+          reason: "Provider call returned no response envelope."
+        }
       };
       return {
         output: fallback,
@@ -464,14 +482,26 @@ export async function runTaskAgent(params: {
             confidence: clamp(toNumber(parsed.confidence, envelope.confidence)),
             hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
             recommended_actions: Array.isArray(parsed.recommended_actions) ? parsed.recommended_actions : [],
-            transcript_summary: String(parsed.transcript_summary ?? envelope.rationale)
+            transcript_summary: String(parsed.transcript_summary ?? envelope.rationale),
+            llm_execution: {
+              provider,
+              model,
+              llm_used: true,
+              mock_mode: false
+            }
           }
         : {
             primary_issue: envelope.summary,
             confidence: clamp(envelope.confidence),
             hypotheses: [],
             recommended_actions: [],
-            transcript_summary: envelope.rationale
+            transcript_summary: envelope.rationale,
+            llm_execution: {
+              provider,
+              model,
+              llm_used: true,
+              mock_mode: false
+            }
           };
 
     return {
@@ -497,7 +527,7 @@ export async function runTaskAgent(params: {
     const incident = {
       incident_id: randomUUID(),
       created_at: new Date().toISOString(),
-      dataset: String(meta.dataset ?? stepParams.dataset ?? "FD001"),
+      dataset: String(meta.dataset ?? stepParams.dataset ?? "dataset"),
       unit_id: Number(meta.unit_id ?? stepParams.unit_id ?? runContext.unit_id ?? 1),
       primary_issue: String(debateOutput?.primary_issue ?? "Unknown issue"),
       confidence: clamp(toNumber(debateOutput?.confidence, 0.5)),
@@ -678,7 +708,14 @@ export async function runTaskAgent(params: {
           model,
           prompt,
           answer: `Mock response: ${prompt}`,
-          mockMode: true
+          mockMode: true,
+          llm_execution: {
+            provider,
+            model,
+            llm_used: false,
+            mock_mode: true,
+            reason: `No ${provider} API key configured.`
+          }
         },
         confidence: 0.45,
         rationale: `No ${provider} API key configured. Returned mock LLM output.`,
@@ -712,7 +749,14 @@ export async function runTaskAgent(params: {
           prompt,
           database: dbOutput ?? null,
           answer: "Provider call failed. No response envelope returned.",
-          mockMode: false
+          mockMode: false,
+          llm_execution: {
+            provider,
+            model,
+            llm_used: false,
+            mock_mode: false,
+            reason: "Provider call failed. No response envelope returned."
+          }
         },
         confidence: 0.3,
         rationale: "Provider call failed for LLM Agent step.",
@@ -728,7 +772,13 @@ export async function runTaskAgent(params: {
         prompt,
         database: dbOutput ?? null,
         answer: envelope.summary,
-        mockMode: false
+        mockMode: false,
+        llm_execution: {
+          provider,
+          model,
+          llm_used: true,
+          mock_mode: false
+        }
       },
       confidence: clamp(envelope.confidence),
       rationale: envelope.rationale,

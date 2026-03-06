@@ -204,6 +204,48 @@ export const RunStateSchema = z.object({
 });
 export type RunState = z.infer<typeof RunStateSchema>;
 
+export const MetricsModelCallSchema = z.object({
+  provider: z.string(),
+  model: z.string(),
+  success: z.number().int().nonnegative(),
+  fallback: z.number().int().nonnegative()
+});
+export type MetricsModelCall = z.infer<typeof MetricsModelCallSchema>;
+
+export const MetricsOverviewSchema = z.object({
+  activeRuns: z.number().int().nonnegative(),
+  completedRuns24h: z.number().int().nonnegative(),
+  failedRuns24h: z.number().int().nonnegative(),
+  approvalQueueDepth: z.number().int().nonnegative(),
+  modelCalls24h: z.array(MetricsModelCallSchema),
+  meanRunDurationMs: z.number().nonnegative(),
+  p95RunDurationMs: z.number().nonnegative(),
+  totalOperations: z.number().int().nonnegative(),
+  completedOperations: z.number().int().nonnegative(),
+  responsesReceived: z.number().int().nonnegative(),
+  estimatedApiCredits: z.number().int().nonnegative(),
+  successRate: z.number().min(0).max(100)
+});
+export type MetricsOverview = z.infer<typeof MetricsOverviewSchema>;
+
+export const RunResultSchema = z.object({
+  runId: z.string(),
+  status: RunStatusSchema,
+  businessSummary: z.string(),
+  primaryDecision: z.string().nullable(),
+  costImpactUSD: z.number().nullable(),
+  riskScore: z.number().nullable(),
+  artifacts: z.array(
+    z.object({
+      type: z.string(),
+      stepId: z.string(),
+      stepName: z.string(),
+      payload: z.any()
+    })
+  )
+});
+export type RunResult = z.infer<typeof RunResultSchema>;
+
 export const AuditRecordSchema = z.object({
   id: z.string(),
   timestamp: z.string(),
@@ -330,8 +372,9 @@ export const AGENT_CATALOG: AgentCatalogEntry[] = [
     description: "Loads CMAPSS dataset slices for a specific engine unit.",
     allowlist: ["audit.append_record", "store.write_output"],
     defaultParams: {
-      dataset: "FD001",
+      dataset: "dataset",
       source: "local",
+      dataset_url: "",
       window: 50
     }
   },

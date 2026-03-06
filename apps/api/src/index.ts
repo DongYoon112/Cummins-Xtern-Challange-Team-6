@@ -304,6 +304,139 @@ function payloadErrorMessage(input: unknown): string | null {
   return null;
 }
 
+function toObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function extractLlmExecution(output: unknown) {
+  const payload = toObject(output);
+  const meta = payload ? toObject(payload.llm_execution) : null;
+  if (!meta) {
+    return null;
+  }
+  return {
+    provider: typeof meta.provider === "string" ? meta.provider : "unknown",
+    model: typeof meta.model === "string" ? meta.model : "unknown",
+    llmUsed: meta.llm_used === true,
+    mockMode: meta.mock_mode === true,
+    reason: typeof meta.reason === "string" ? meta.reason : ""
+  };
+}
+
+function findNumericInRun(run: {
+  steps: Array<{ output?: unknown }>;
+}, key: string): number | null {
+  for (const step of [...run.steps].reverse()) {
+    const output = toObject(step.output);
+    if (!output) continue;
+    const value = Number(output[key]);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function buildRunResult(run: {
+  runId: string;
+  status: string;
+  error?: string;
+  steps: Array<{ stepId: string; name: string; output?: unknown }>;
+}) {
+  const artifacts = run.steps
+    .filter((step) => step.output != null)
+    .map((step) => ({
+      type: "step_output",
+      stepId: step.stepId,
+      stepName: step.name,
+      payload: step.output
+    }));
+
+  const lastOutputStep = [...run.steps].reverse().find((step) => step.output != null);
+  const lastOutput = toObject(lastOutputStep?.output);
+  const businessSummary =
+    (lastOutput && typeof lastOutput.summary === "string" && lastOutput.summary) ||
+    (lastOutput && typeof lastOutput.markdown === "string" && lastOutput.markdown) ||
+    run.error ||
+    "No summary generated.";
+
+  let primaryDecision: string | null = null;
+  for (const step of [...run.steps].reverse()) {
+    const output = toObject(step.output);
+    if (!output) continue;
+    const recommendation = toObject(output.finalRecommendation);
+    if (typeof output.finalRecommendation === "string" && output.finalRecommendation.trim()) {
+      primaryDecision = output.finalRecommendation;
+      break;
+    }
+    if (recommendation && typeof recommendation.decision === "string" && recommendation.decision.trim()) {
+      primaryDecision = recommendation.decision;
+      break;
+    }
+    if (typeof output.recommendation === "string" && output.recommendation.trim()) {
+      primaryDecision = output.recommendation;
+      break;
+    }
+  }
+
+  return {
+    runId: run.runId,
+    status: run.status,
+    businessSummary,
+    primaryDecision,
+    costImpactUSD: findNumericInRun(run, "costImpactUSD"),
+    riskScore: findNumericInRun(run, "riskScore"),
+    artifacts
+  };
+}
+
+function percentile(values: number[], p: number) {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[index];
+}
+
+function applyAuditFilters(
+  records: Array<Record<string, unknown>>,
+  filters: { eventType?: string; provider?: string; model?: string; fallbackOnly?: boolean }
+) {
+  return records.filter((record) => {
+    const inputs = toObject(record.inputs) ?? {};
+    const output = toObject(record.output) ?? {};
+    const provider = String(
+      inputs.provider ??
+        output.provider ??
+        (toObject(output.llm_execution)?.provider ?? "")
+    );
+    const model = String(
+      inputs.model ??
+        output.model ??
+        (toObject(output.llm_execution)?.model ?? "")
+    );
+    const eventType = String(inputs.eventType ?? output.eventType ?? output.eventCategory ?? "");
+    const llmUsed = toObject(output.llm_execution)?.llm_used === true;
+    const mockMode = toObject(output.llm_execution)?.mock_mode === true;
+    const isFallback = mockMode || !llmUsed;
+
+    if (filters.eventType && eventType !== filters.eventType) {
+      return false;
+    }
+    if (filters.provider && provider !== filters.provider) {
+      return false;
+    }
+    if (filters.model && model !== filters.model) {
+      return false;
+    }
+    if (filters.fallbackOnly && !isFallback) {
+      return false;
+    }
+    return true;
+  });
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -704,6 +837,264 @@ app.get("/workflows/:workflowId", async (req, res) => {
   }
 });
 
+app.get("/workflows/:workflowId/suggestions", requireRoles("BUILDER", "OPERATOR", "APPROVER", "AUDITOR", "ADMIN"), (req, res) => {
+  const workflowId = String(req.params.workflowId ?? "").trim();
+  if (!workflowId) {
+    res.status(400).json({ error: "Missing workflowId" });
+    return;
+  }
+
+  try {
+    const rows = db
+      .prepare(
+        `
+        SELECT id, workflow_id, author_user_id, author_username, author_role, body, created_at
+        FROM workflow_suggestions
+        WHERE team_id = ? AND workflow_id = ?
+        ORDER BY created_at DESC
+        `
+      )
+      .all(req.user!.teamId, workflowId) as Array<{
+      id: string;
+      workflow_id: string;
+      author_user_id: string;
+      author_username: string;
+      author_role: string;
+      body: string;
+      created_at: string;
+    }>;
+
+    res.json({
+      suggestions: rows.map((row) => ({
+        id: row.id,
+        workflowId: row.workflow_id,
+        authorUserId: row.author_user_id,
+        authorUsername: row.author_username,
+        authorRole: row.author_role,
+        body: row.body,
+        createdAt: row.created_at
+      }))
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to list workflow suggestions" });
+  }
+});
+
+const workflowSuggestionSchema = z.object({
+  body: z.string().min(1).max(2000)
+});
+
+app.post("/workflows/:workflowId/suggestions", requireRoles("BUILDER", "OPERATOR", "APPROVER", "AUDITOR", "ADMIN"), (req, res) => {
+  const workflowId = String(req.params.workflowId ?? "").trim();
+  if (!workflowId) {
+    res.status(400).json({ error: "Missing workflowId" });
+    return;
+  }
+  const parsed = workflowSuggestionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid suggestion payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const now = new Date().toISOString();
+    const id = `ws_${randomUUID()}`;
+    db.prepare(
+      `
+      INSERT INTO workflow_suggestions (id, team_id, workflow_id, author_user_id, author_username, author_role, body, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    ).run(
+      id,
+      req.user!.teamId,
+      workflowId,
+      req.user!.id,
+      req.user!.username,
+      req.user!.role,
+      parsed.data.body.trim(),
+      now
+    );
+    res.status(201).json({
+      suggestion: {
+        id,
+        workflowId,
+        authorUserId: req.user!.id,
+        authorUsername: req.user!.username,
+        authorRole: req.user!.role,
+        body: parsed.data.body.trim(),
+        createdAt: now
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to save workflow suggestion" });
+  }
+});
+
+app.get("/workflows/:workflowId/change-requests", requireRoles("BUILDER", "OPERATOR", "APPROVER", "AUDITOR", "ADMIN"), (req, res) => {
+  const workflowId = String(req.params.workflowId ?? "").trim();
+  if (!workflowId) {
+    res.status(400).json({ error: "Missing workflowId" });
+    return;
+  }
+  try {
+    const rows = db
+      .prepare(
+        `
+        SELECT id, workflow_id, title, body, status, author_user_id, author_username, author_role, proposed_config_json,
+               reviewed_by_user_id, reviewed_at, created_at, updated_at
+        FROM workflow_change_requests
+        WHERE team_id = ? AND workflow_id = ?
+        ORDER BY created_at DESC
+        `
+      )
+      .all(req.user!.teamId, workflowId) as Array<{
+      id: string;
+      workflow_id: string;
+      title: string;
+      body: string;
+      status: string;
+      author_user_id: string;
+      author_username: string;
+      author_role: string;
+      proposed_config_json: string | null;
+      reviewed_by_user_id: string | null;
+      reviewed_at: string | null;
+      created_at: string;
+      updated_at: string;
+    }>;
+
+    res.json({
+      changeRequests: rows.map((row) => ({
+        id: row.id,
+        workflowId: row.workflow_id,
+        title: row.title,
+        body: row.body,
+        status: row.status,
+        authorUserId: row.author_user_id,
+        authorUsername: row.author_username,
+        authorRole: row.author_role,
+        proposedConfig: row.proposed_config_json ? JSON.parse(row.proposed_config_json) : null,
+        reviewedByUserId: row.reviewed_by_user_id,
+        reviewedAt: row.reviewed_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }))
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to list workflow change requests" });
+  }
+});
+
+const workflowChangeRequestCreateSchema = z.object({
+  title: z.string().min(1).max(200),
+  body: z.string().min(1).max(4000),
+  proposedConfig: z.record(z.any()).optional().nullable()
+});
+
+app.post("/workflows/:workflowId/change-requests", requireRoles("BUILDER", "OPERATOR", "APPROVER", "AUDITOR", "ADMIN"), (req, res) => {
+  const workflowId = String(req.params.workflowId ?? "").trim();
+  if (!workflowId) {
+    res.status(400).json({ error: "Missing workflowId" });
+    return;
+  }
+  const parsed = workflowChangeRequestCreateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid change request payload", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const now = new Date().toISOString();
+    const id = `wcr_${randomUUID()}`;
+    db.prepare(
+      `
+      INSERT INTO workflow_change_requests (
+        id, team_id, workflow_id, title, body, status,
+        author_user_id, author_username, author_role, proposed_config_json,
+        reviewed_by_user_id, reviewed_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    ).run(
+      id,
+      req.user!.teamId,
+      workflowId,
+      parsed.data.title.trim(),
+      parsed.data.body.trim(),
+      "OPEN",
+      req.user!.id,
+      req.user!.username,
+      req.user!.role,
+      parsed.data.proposedConfig ? JSON.stringify(parsed.data.proposedConfig) : null,
+      null,
+      null,
+      now,
+      now
+    );
+
+    res.status(201).json({
+      changeRequest: {
+        id,
+        workflowId,
+        title: parsed.data.title.trim(),
+        body: parsed.data.body.trim(),
+        status: "OPEN",
+        authorUserId: req.user!.id,
+        authorUsername: req.user!.username,
+        authorRole: req.user!.role,
+        proposedConfig: parsed.data.proposedConfig ?? null,
+        reviewedByUserId: null,
+        reviewedAt: null,
+        createdAt: now,
+        updatedAt: now
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to create workflow change request" });
+  }
+});
+
+const workflowChangeRequestStatusSchema = z.object({
+  status: z.enum(["OPEN", "ACCEPTED", "REJECTED", "MERGED"])
+});
+
+app.post("/workflows/:workflowId/change-requests/:changeRequestId/status", requireRoles("BUILDER", "ADMIN"), (req, res) => {
+  const workflowId = String(req.params.workflowId ?? "").trim();
+  const changeRequestId = String(req.params.changeRequestId ?? "").trim();
+  if (!workflowId || !changeRequestId) {
+    res.status(400).json({ error: "Missing workflowId or changeRequestId" });
+    return;
+  }
+  const parsed = workflowChangeRequestStatusSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid status payload", details: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const now = new Date().toISOString();
+    const result = db
+      .prepare(
+        `
+        UPDATE workflow_change_requests
+        SET status = ?, reviewed_by_user_id = ?, reviewed_at = ?, updated_at = ?
+        WHERE id = ? AND team_id = ? AND workflow_id = ?
+        `
+      )
+      .run(parsed.data.status, req.user!.id, now, now, changeRequestId, req.user!.teamId, workflowId);
+    if ((result.changes ?? 0) < 1) {
+      res.status(404).json({ error: "Change request not found" });
+      return;
+    }
+    res.json({ ok: true, status: parsed.data.status, reviewedAt: now, reviewedByUserId: req.user!.id });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to update change request status" });
+  }
+});
+
 app.delete("/workflows/:workflowId", requireRoles("BUILDER"), async (req, res) => {
   const workflowId = String(req.params.workflowId ?? "").trim();
   if (!workflowId) {
@@ -723,6 +1114,8 @@ app.delete("/workflows/:workflowId", requireRoles("BUILDER"), async (req, res) =
     db.prepare("DELETE FROM repo_settings WHERE team_id = ? AND repo_id = ?").run(req.user!.teamId, workflowId);
     db.prepare("DELETE FROM approvals WHERE team_id = ? AND workflow_id = ?").run(req.user!.teamId, workflowId);
     db.prepare("DELETE FROM workflow_drafts WHERE team_id = ? AND draft_id = ?").run(req.user!.teamId, workflowId);
+    db.prepare("DELETE FROM workflow_suggestions WHERE team_id = ? AND workflow_id = ?").run(req.user!.teamId, workflowId);
+    db.prepare("DELETE FROM workflow_change_requests WHERE team_id = ? AND workflow_id = ?").run(req.user!.teamId, workflowId);
 
     res.json({
       ok: payload.ok,
@@ -1043,10 +1436,35 @@ const settingsKeySchema = z.object({
   repoId: z.string().min(1).optional()
 });
 
+function validateProviderKeyFormat(provider: "openai" | "anthropic" | "gemini", rawKey: string) {
+  const key = rawKey.trim();
+  if (!key) {
+    return "Key cannot be empty.";
+  }
+  if (key.toUpperCase().startsWith("MAST")) {
+    return "This looks like MASTER_KEY, not a provider API key.";
+  }
+  if (provider === "openai" && !key.startsWith("sk-")) {
+    return "OpenAI API keys should start with 'sk-'.";
+  }
+  if (provider === "anthropic" && !key.startsWith("sk-ant-")) {
+    return "Anthropic API keys should start with 'sk-ant-'.";
+  }
+  if (provider === "gemini" && !key.startsWith("AIza")) {
+    return "Gemini API keys typically start with 'AIza'.";
+  }
+  return "";
+}
+
 app.post("/settings/key", requireRoles("BUILDER"), (req, res) => {
   const parsed = settingsKeySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid key payload", details: parsed.error.flatten() });
+    return;
+  }
+  const formatError = validateProviderKeyFormat(parsed.data.provider, parsed.data.key);
+  if (formatError) {
+    res.status(400).json({ error: formatError });
     return;
   }
 
@@ -1099,6 +1517,15 @@ app.post("/settings/test", requireRoles("BUILDER"), async (req, res) => {
     const provider = parsed.data.provider ?? settings.defaultProvider;
     const model = parsed.data.model ?? settings.defaultModel;
     const apiKey = settings.keys[provider];
+    if (!apiKey) {
+      res.status(400).json({ ok: false, mockMode: true, message: `No ${provider} API key is configured for this scope.` });
+      return;
+    }
+    const formatError = validateProviderKeyFormat(provider, apiKey);
+    if (formatError) {
+      res.status(400).json({ ok: false, mockMode: true, message: formatError });
+      return;
+    }
     const result = await testProviderConnection({ provider, model, apiKey });
     res.json(result);
   } catch (error) {

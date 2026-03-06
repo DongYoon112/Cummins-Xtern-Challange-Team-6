@@ -90,6 +90,39 @@ function safeDecrypt(value: string | null): string | undefined {
   }
 }
 
+function isValidProviderKey(provider: Provider, value?: string) {
+  if (!value) {
+    return false;
+  }
+  const key = value.trim();
+  if (!key || key.toUpperCase().startsWith("MAST")) {
+    return false;
+  }
+  if (provider === "openai") {
+    return key.startsWith("sk-");
+  }
+  if (provider === "anthropic") {
+    return key.startsWith("sk-ant-");
+  }
+  if (provider === "gemini") {
+    return key.startsWith("AIza");
+  }
+  return false;
+}
+
+function resolveEffectiveKey(provider: Provider, repoValue: string | undefined, teamValue: string | undefined, envValue: string | undefined) {
+  if (isValidProviderKey(provider, repoValue)) {
+    return repoValue?.trim();
+  }
+  if (isValidProviderKey(provider, teamValue)) {
+    return teamValue?.trim();
+  }
+  if (isValidProviderKey(provider, envValue)) {
+    return envValue?.trim();
+  }
+  return undefined;
+}
+
 function effectiveRow(teamId: string, repoId?: string) {
   if (repoId && repoId.trim()) {
     return getRepoRow(teamId, repoId.trim());
@@ -98,12 +131,30 @@ function effectiveRow(teamId: string, repoId?: string) {
 }
 
 export function getTeamSettingsForServer(teamId: string, repoId?: string): ServerTeamSettings {
-  const row = effectiveRow(teamId, repoId);
+  const teamRow = getTeamRow(teamId);
+  const repoRow = repoId && repoId.trim() ? getRepoRow(teamId, repoId.trim()) : null;
+  const row = repoRow ?? teamRow;
 
-  const openai = safeDecrypt(row.openai_key_enc) ?? process.env.OPENAI_API_KEY;
-  const anthropic = safeDecrypt(row.anthropic_key_enc) ?? process.env.ANTHROPIC_API_KEY;
-  const gemini = safeDecrypt(row.gemini_key_enc) ?? process.env.GEMINI_API_KEY;
-  const externalDbUrl = safeDecrypt(row.external_db_url_enc) ?? process.env.EXTERNAL_DB_URL;
+  const openai = resolveEffectiveKey(
+    "openai",
+    safeDecrypt(repoRow?.openai_key_enc ?? null),
+    safeDecrypt(teamRow.openai_key_enc),
+    process.env.OPENAI_API_KEY
+  );
+  const anthropic = resolveEffectiveKey(
+    "anthropic",
+    safeDecrypt(repoRow?.anthropic_key_enc ?? null),
+    safeDecrypt(teamRow.anthropic_key_enc),
+    process.env.ANTHROPIC_API_KEY
+  );
+  const gemini = resolveEffectiveKey(
+    "gemini",
+    safeDecrypt(repoRow?.gemini_key_enc ?? null),
+    safeDecrypt(teamRow.gemini_key_enc),
+    process.env.GEMINI_API_KEY
+  );
+  const externalDbUrl =
+    safeDecrypt(repoRow?.external_db_url_enc ?? null) ?? safeDecrypt(teamRow.external_db_url_enc) ?? process.env.EXTERNAL_DB_URL;
 
   return {
     teamId,
@@ -120,12 +171,14 @@ export function getTeamSettingsForServer(teamId: string, repoId?: string): Serve
 }
 
 export function getTeamSettingsForClient(teamId: string, repoId?: string) {
-  const row = effectiveRow(teamId, repoId);
+  const teamRow = getTeamRow(teamId);
+  const repoRow = repoId && repoId.trim() ? getRepoRow(teamId, repoId.trim()) : null;
+  const row = repoRow ?? teamRow;
 
-  const openai = safeDecrypt(row.openai_key_enc);
-  const anthropic = safeDecrypt(row.anthropic_key_enc);
-  const gemini = safeDecrypt(row.gemini_key_enc);
-  const externalDbUrl = safeDecrypt(row.external_db_url_enc);
+  const openai = safeDecrypt(repoRow?.openai_key_enc ?? null) ?? safeDecrypt(teamRow.openai_key_enc);
+  const anthropic = safeDecrypt(repoRow?.anthropic_key_enc ?? null) ?? safeDecrypt(teamRow.anthropic_key_enc);
+  const gemini = safeDecrypt(repoRow?.gemini_key_enc ?? null) ?? safeDecrypt(teamRow.gemini_key_enc);
+  const externalDbUrl = safeDecrypt(repoRow?.external_db_url_enc ?? null) ?? safeDecrypt(teamRow.external_db_url_enc);
 
   return {
     teamId,

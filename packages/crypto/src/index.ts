@@ -67,9 +67,6 @@ export function maskSecret(secret: string): string {
   if (!secret) {
     return "";
   }
-
-  const start = secret.slice(0, Math.min(4, secret.length));
-  const end = secret.slice(-4);
-  const hiddenLength = Math.max(0, secret.length - start.length - end.length);
-  return `${start}${"*".repeat(Math.max(4, hiddenLength))}${end}`;
+  const prefix = secret.slice(0, Math.min(5, secret.length));
+  return `${prefix}...`;
 }
